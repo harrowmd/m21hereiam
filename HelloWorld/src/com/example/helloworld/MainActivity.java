@@ -14,11 +14,15 @@ import android.location.LocationManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -26,15 +30,27 @@ import java.util.Locale;
 public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
+    private static final int STORAGE_PERMISSION_REQUEST  = 2;
 
-    private MapView mapView;
+    private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
     private LocationManager locationManager;
     private GnssStatus.Callback gnssCallback;
 
+    // Current values for CSV
+    private double  csvLat        = 0;
+    private double  csvLon        = 0;
+    private double  csvAlt        = 0;
+    private float   csvAccuracy   = 0;
+    private int     csvSatellites = 0;
+    private int     csvBattery    = 0;
+
     private final Handler clockHandler = new Handler();
-    private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+    private final Handler csvHandler   = new Handler();
+
+    private final SimpleDateFormat dateFmt      = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
+    private final SimpleDateFormat timeFmt      = new SimpleDateFormat("HH:mm:ss",   Locale.getDefault());
+    private final SimpleDateFormat tsFmt        = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
@@ -45,12 +61,19 @@ public class MainActivity extends Activity implements LocationListener {
         }
     };
 
+    private final Runnable csvTick = new Runnable() {
+        @Override public void run() {
+            saveToCsv();
+            csvHandler.postDelayed(this, 60000);
+        }
+    };
+
     private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
-            int pct = (scale > 0) ? (level * 100 / scale) : -1;
-            tvBattery.setText("Battery: " + pct + "%");
+            csvBattery = (scale > 0) ? (level * 100 / scale) : -1;
+            tvBattery.setText("Battery: " + csvBattery + "%");
         }
     };
 
@@ -75,7 +98,6 @@ public class MainActivity extends Activity implements LocationListener {
         });
 
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
-
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -85,72 +107,110 @@ public class MainActivity extends Activity implements LocationListener {
                     for (int i = 0; i < status.getSatelliteCount(); i++) {
                         if (status.usedInFix(i)) used++;
                     }
+                    csvSatellites = used;
                     tvSatellites.setText("Satellites: " + used);
                 }
             };
         }
 
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, LOCATION_PERMISSION_REQUEST);
-        } else {
-            startLocationUpdates();
-        }
+        requestNeededPermissions();
     }
 
+    // ── Permissions ───────────────────────────────────────────────────────────
+
+    private void requestNeededPermissions() {
+        java.util.List<String> needed = new java.util.ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (!needed.isEmpty())
+            requestPermissions(needed.toArray(new String[0]), LOCATION_PERMISSION_REQUEST);
+        else
+            startLocationUpdates();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        startLocationUpdates();  // start regardless; CSV write will silently skip if storage denied
+    }
+
+    // ── Location ──────────────────────────────────────────────────────────────
+
     private void startLocationUpdates() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return;
-
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60000, 0, this);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
-            locationManager.registerGnssStatusCallback(gnssCallback);
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            tvLat.setText("Location permission denied");
+            return;
         }
-
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60000, 0, this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
+            locationManager.registerGnssStatusCallback(gnssCallback);
         Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
         if (last == null) last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
         if (last != null) updateDisplay(last);
     }
 
     private void updateDisplay(Location loc) {
-        tvLat.setText(String.format("Lat: %.6f", loc.getLatitude()));
-        tvLon.setText(String.format("Lon: %.6f", loc.getLongitude()));
-        tvAlt.setText(String.format("Alt: %.1f m", loc.getAltitude()));
-        tvAccuracy.setText(String.format("Accuracy: %.1f m", loc.getAccuracy()));
-        mapView.setLocation(loc.getLatitude(), loc.getLongitude());
+        csvLat      = loc.getLatitude();
+        csvLon      = loc.getLongitude();
+        csvAlt      = loc.getAltitude();
+        csvAccuracy = loc.getAccuracy();
+        tvLat.setText(String.format("Lat: %.6f",      csvLat));
+        tvLon.setText(String.format("Lon: %.6f",      csvLon));
+        tvAlt.setText(String.format("Alt: %.1f m",    csvAlt));
+        tvAccuracy.setText(String.format("Accuracy: %.1f m", csvAccuracy));
+        mapView.setLocation(csvLat, csvLon);
     }
 
-    @Override
-    public void onLocationChanged(Location location) {
-        updateDisplay(location);
+    @Override public void onLocationChanged(Location location) { updateDisplay(location); }
+    @Override public void onStatusChanged(String p, int s, Bundle e) {}
+    @Override public void onProviderEnabled(String p) {}
+    @Override public void onProviderDisabled(String p) {}
+
+    // ── CSV saving ────────────────────────────────────────────────────────────
+
+    private void saveToCsv() {
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            return;
+        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+        if (!dir.exists()) dir.mkdirs();
+        File file = new File(dir, "hereiamnow.csv");
+        boolean isNew = !file.exists();
+        try {
+            FileWriter fw = new FileWriter(file, true);
+            if (isNew)
+                fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct\n");
+            Date now = new Date();
+            fw.write(String.format(Locale.US,
+                "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
+                tsFmt.format(now),
+                dateFmt.format(now),
+                timeFmt.format(now),
+                csvLat, csvLon, csvAlt, csvAccuracy,
+                csvSatellites, csvBattery));
+            fw.close();
+        } catch (IOException ignored) {}
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == LOCATION_PERMISSION_REQUEST &&
-                grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates();
-        } else {
-            tvLat.setText("Location permission denied");
-        }
-    }
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     protected void onResume() {
         super.onResume();
         clockHandler.post(clockTick);
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+        csvHandler.postDelayed(csvTick, 60000);
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
             startLocationUpdates();
-        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         clockHandler.removeCallbacks(clockTick);
+        csvHandler.removeCallbacks(csvTick);
         locationManager.removeUpdates(this);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             locationManager.unregisterGnssStatusCallback(gnssCallback);
-        }
     }
 
     @Override
@@ -158,8 +218,4 @@ public class MainActivity extends Activity implements LocationListener {
         super.onDestroy();
         unregisterReceiver(batteryReceiver);
     }
-
-    @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
-    @Override public void onProviderEnabled(String provider) {}
-    @Override public void onProviderDisabled(String provider) {}
 }

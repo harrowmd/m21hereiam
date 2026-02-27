@@ -28,6 +28,6 @@ $BUILD_TOOLS/apksigner sign \
   --ks-pass pass:android \
   --ks-key-alias androiddebugkey \
   --key-pass pass:android \
-  --out helloworld.apk aligned.apk
+  --out m21hereiamnow.apk aligned.apk
 
 echo "Build OK"
