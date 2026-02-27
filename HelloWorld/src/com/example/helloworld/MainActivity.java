@@ -27,6 +27,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -390,7 +391,6 @@ public class MainActivity extends Activity implements LocationListener {
     private void uploadFiles() {
         if (nextcloudUrl.isEmpty() || nextcloudUser.isEmpty()) return;
 
-        // Capture settings on the main thread before handing off
         final String url  = nextcloudUrl.replaceAll("/+$", "");
         final String user = nextcloudUser;
         final String pass = nextcloudPass;
@@ -399,6 +399,7 @@ public class MainActivity extends Activity implements LocationListener {
 
         new Thread(new Runnable() {
             @Override public void run() {
+                final String result;
                 try {
                     String auth = "Basic " + Base64.encodeToString(
                         (user + ":" + pass).getBytes("UTF-8"), Base64.NO_WRAP);
@@ -407,26 +408,45 @@ public class MainActivity extends Activity implements LocationListener {
                     String hereibDir  = davRoot + "hereiam/";
                     String sessionDir = hereibDir + enc(sess) + "/";
 
-                    mkCol(hereibDir,  auth);
-                    mkCol(sessionDir, auth);
+                    int r1 = mkCol(hereibDir,  auth);
+                    int r2 = mkCol(sessionDir, auth);
+                    if (r1 >= 400 && r1 != 405) throw new IOException("hereiam/ MKCOL: " + r1);
+                    if (r2 >= 400 && r2 != 405) throw new IOException(sess + "/ MKCOL: " + r2);
 
+                    int uploaded = 0;
                     File[] files = dir.listFiles();
-                    if (files == null) return;
-                    for (File f : files) {
-                        for (String suffix : LOG_SUFFIXES) {
-                            if (f.getName().endsWith(suffix)) {
-                                putFile(f, sessionDir + enc(f.getName()), auth);
-                                break;
+                    if (files != null) {
+                        for (File f : files) {
+                            for (String suffix : LOG_SUFFIXES) {
+                                if (f.getName().endsWith(suffix)) {
+                                    putFile(f, sessionDir + enc(f.getName()), auth);
+                                    uploaded++;
+                                    break;
+                                }
                             }
                         }
                     }
-                } catch (Exception ignored) {}
+                    result = "Uploaded " + uploaded + " file(s) \u2192 " + sess;
+                } catch (Exception e) {
+                    final String err = "Upload failed: " + e.getMessage();
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            Toast.makeText(MainActivity.this, err, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                    return;
+                }
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+                    }
+                });
             }
         }).start();
     }
 
-    /** MKCOL — silently accepts 201 (created) and 405 (already exists). */
-    private void mkCol(String url, String auth) throws IOException {
+    /** MKCOL — returns the HTTP response code. */
+    private int mkCol(String url, String auth) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setRequestMethod("MKCOL");
         c.setRequestProperty("Authorization", auth);
@@ -434,8 +454,7 @@ public class MainActivity extends Activity implements LocationListener {
         c.setReadTimeout(15000);
         int code = c.getResponseCode();
         c.disconnect();
-        if (code != 201 && code != 405 && code != 301 && code != 302)
-            throw new IOException("MKCOL " + url + " returned " + code);
+        return code;
     }
 
     /** PUT a local file to a WebDAV URL. */
