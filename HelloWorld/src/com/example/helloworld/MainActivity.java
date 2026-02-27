@@ -174,22 +174,37 @@ public class MainActivity extends Activity implements LocationListener {
             return;
         File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
         if (!dir.exists()) dir.mkdirs();
-        File file = new File(dir, "hereiamnow.csv");
+
+        Date now = new Date();
+        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
         boolean isNew = !file.exists();
         try {
             FileWriter fw = new FileWriter(file, true);
             if (isNew)
                 fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct\n");
-            Date now = new Date();
             fw.write(String.format(Locale.US,
                 "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
-                tsFmt.format(now),
-                dateFmt.format(now),
-                timeFmt.format(now),
+                tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
                 csvLat, csvLon, csvAlt, csvAccuracy,
                 csvSatellites, csvBattery));
             fw.close();
         } catch (IOException ignored) {}
+
+        deleteOldCsvFiles(dir);
+    }
+
+    private void deleteOldCsvFiles(File dir) {
+        long cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            String name = f.getName();
+            if (!name.endsWith("-hereiamnow.csv") || name.length() < 10) continue;
+            try {
+                Date fileDate = dateFmt.parse(name.substring(0, 10));
+                if (fileDate != null && fileDate.getTime() < cutoff) f.delete();
+            } catch (java.text.ParseException ignored) {}
+        }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
