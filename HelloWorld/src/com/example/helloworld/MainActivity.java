@@ -40,11 +40,12 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
 
-    private static final String PREFS            = "hereiamnow";
-    private static final String PREF_INTERVAL    = "update_interval_sec";
-    private static final String PREF_NC_URL      = "nextcloud_url";
-    private static final String PREF_NC_USER     = "nextcloud_user";
-    private static final String PREF_NC_PASS     = "nextcloud_pass";
+    private static final String PREFS                 = "hereiamnow";
+    private static final String PREF_INTERVAL         = "update_interval_sec";
+    private static final String PREF_UPLOAD_INTERVAL  = "upload_interval_sec";
+    private static final String PREF_NC_URL           = "nextcloud_url";
+    private static final String PREF_NC_USER          = "nextcloud_user";
+    private static final String PREF_NC_PASS          = "nextcloud_pass";
 
     // Closing tags for GPX / KML
     private static final String GPX_CLOSE = "    </trkseg>\n  </trk>\n</gpx>\n";
@@ -52,6 +53,7 @@ public class MainActivity extends Activity implements LocationListener {
 
     // ── Settings (persisted) ──────────────────────────────────────────────────
     private long   updateInterval = 60_000;
+    private long   uploadInterval = 300_000;
     private String nextcloudUrl   = "https://cloud.manytwo.one";
     private String nextcloudUser  = "";
     private String nextcloudPass  = "";
@@ -185,7 +187,8 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void loadSettings() {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        updateInterval = p.getInt(PREF_INTERVAL, 60) * 1000L;
+        updateInterval = p.getInt(PREF_INTERVAL,        60)  * 1000L;
+        uploadInterval = p.getInt(PREF_UPLOAD_INTERVAL, 300) * 1000L;
         nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.manytwo.one");
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
@@ -193,7 +196,8 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void saveSettings() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putInt(PREF_INTERVAL, (int) (updateInterval / 1000))
+            .putInt(PREF_INTERVAL,        (int) (updateInterval / 1000))
+            .putInt(PREF_UPLOAD_INTERVAL, (int) (uploadInterval / 1000))
             .putString(PREF_NC_URL,  nextcloudUrl)
             .putString(PREF_NC_USER, nextcloudUser)
             .putString(PREF_NC_PASS, nextcloudPass)
@@ -215,7 +219,6 @@ public class MainActivity extends Activity implements LocationListener {
         int dp8  = Math.round(8  * getResources().getDisplayMetrics().density);
         int dp16 = Math.round(16 * getResources().getDisplayMetrics().density);
 
-        // Helper to create a labelled EditText pair
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp16, dp8, dp16, dp8);
@@ -223,6 +226,10 @@ public class MainActivity extends Activity implements LocationListener {
         layout.addView(label("Update interval (seconds)"));
         final EditText editInterval = editText(InputType.TYPE_CLASS_NUMBER, String.valueOf(updateInterval / 1000));
         layout.addView(editInterval);
+
+        layout.addView(label("Upload interval (seconds)"));
+        final EditText editUpload = editText(InputType.TYPE_CLASS_NUMBER, String.valueOf(uploadInterval / 1000));
+        layout.addView(editUpload);
 
         layout.addView(label("Nextcloud / OwnCloud URL"));
         final EditText editUrl = editText(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, nextcloudUrl);
@@ -234,7 +241,38 @@ public class MainActivity extends Activity implements LocationListener {
 
         layout.addView(label("Password"));
         final EditText editPass = editText(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, nextcloudPass);
-        layout.addView(editPass);
+
+        // Row: password field + show/hide toggle
+        final Button btnToggle = new Button(this);
+        btnToggle.setText("Show");
+        btnToggle.setTextSize(12);
+        btnToggle.setTag(Boolean.FALSE); // FALSE = currently hidden
+
+        LinearLayout passRow = new LinearLayout(this);
+        passRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams etParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        passRow.addView(editPass, etParams);
+        passRow.addView(btnToggle, btnParams);
+        layout.addView(passRow);
+
+        btnToggle.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                boolean hidden = (Boolean) btnToggle.getTag();
+                if (hidden) {
+                    // Currently visible → hide
+                    editPass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                    btnToggle.setText("Show");
+                } else {
+                    // Currently hidden → show
+                    editPass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                    btnToggle.setText("Hide");
+                }
+                btnToggle.setTag(!hidden);
+                editPass.setSelection(editPass.getText().length()); // keep cursor at end
+            }
+        });
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
@@ -247,6 +285,10 @@ public class MainActivity extends Activity implements LocationListener {
                     try {
                         int secs = Integer.parseInt(editInterval.getText().toString().trim());
                         updateInterval = Math.max(10, secs) * 1000L;
+                    } catch (NumberFormatException ignored) {}
+                    try {
+                        int secs = Integer.parseInt(editUpload.getText().toString().trim());
+                        uploadInterval = Math.max(10, secs) * 1000L;
                     } catch (NumberFormatException ignored) {}
                     nextcloudUrl  = editUrl.getText().toString().trim();
                     nextcloudUser = editUser.getText().toString().trim();
