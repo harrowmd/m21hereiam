@@ -23,34 +23,44 @@ import android.widget.TextView;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.TimeZone;
 
 public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
-    private static final int STORAGE_PERMISSION_REQUEST  = 2;
+
+    // GPX closing tags — always the tail of a valid GPX file
+    private static final String GPX_CLOSE = "    </trkseg>\n  </trk>\n</gpx>\n";
 
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
     private LocationManager locationManager;
     private GnssStatus.Callback gnssCallback;
 
-    // Current values for CSV
-    private double  csvLat        = 0;
-    private double  csvLon        = 0;
-    private double  csvAlt        = 0;
-    private float   csvAccuracy   = 0;
-    private int     csvSatellites = 0;
-    private int     csvBattery    = 0;
+    // Current values for logging
+    private double csvLat        = 0;
+    private double csvLon        = 0;
+    private double csvAlt        = 0;
+    private float  csvAccuracy   = 0;
+    private int    csvSatellites = 0;
+    private int    csvBattery    = 0;
 
     private final Handler clockHandler = new Handler();
-    private final Handler csvHandler   = new Handler();
+    private final Handler logHandler   = new Handler();
 
-    private final SimpleDateFormat dateFmt      = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-    private final SimpleDateFormat timeFmt      = new SimpleDateFormat("HH:mm:ss",   Locale.getDefault());
-    private final SimpleDateFormat tsFmt        = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+    private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd",          Locale.getDefault());
+    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss",            Locale.getDefault());
+    private final SimpleDateFormat tsFmt   = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+    private final SimpleDateFormat isoFmt;   // UTC ISO-8601 for GPX <time>
+
+    {
+        isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
+        isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+    }
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
@@ -61,10 +71,11 @@ public class MainActivity extends Activity implements LocationListener {
         }
     };
 
-    private final Runnable csvTick = new Runnable() {
+    private final Runnable logTick = new Runnable() {
         @Override public void run() {
             saveToCsv();
-            csvHandler.postDelayed(this, 60000);
+            saveToGpx();
+            logHandler.postDelayed(this, 60000);
         }
     };
 
@@ -132,7 +143,7 @@ public class MainActivity extends Activity implements LocationListener {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        startLocationUpdates();  // start regardless; CSV write will silently skip if storage denied
+        startLocationUpdates();
     }
 
     // ── Location ──────────────────────────────────────────────────────────────
@@ -155,9 +166,9 @@ public class MainActivity extends Activity implements LocationListener {
         csvLon      = loc.getLongitude();
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
-        tvLat.setText(String.format("Lat: %.6f",      csvLat));
-        tvLon.setText(String.format("Lon: %.6f",      csvLon));
-        tvAlt.setText(String.format("Alt: %.1f m",    csvAlt));
+        tvLat.setText(String.format("Lat: %.6f",       csvLat));
+        tvLon.setText(String.format("Lon: %.6f",       csvLon));
+        tvAlt.setText(String.format("Alt: %.1f m",     csvAlt));
         tvAccuracy.setText(String.format("Accuracy: %.1f m", csvAccuracy));
         mapView.setLocation(csvLat, csvLon);
     }
@@ -172,34 +183,86 @@ public class MainActivity extends Activity implements LocationListener {
     private void saveToCsv() {
         if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             return;
-        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        if (!dir.exists()) dir.mkdirs();
-
-        Date now = new Date();
+        File dir = docsDir();
+        Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
         boolean isNew = !file.exists();
         try {
             FileWriter fw = new FileWriter(file, true);
             if (isNew)
                 fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct\n");
-            fw.write(String.format(Locale.US,
-                "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
+            fw.write(String.format(Locale.US, "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
                 tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
-                csvLat, csvLon, csvAlt, csvAccuracy,
-                csvSatellites, csvBattery));
+                csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
             fw.close();
         } catch (IOException ignored) {}
 
-        deleteOldCsvFiles(dir);
+        deleteOldFiles(dir, "-hereiamnow.csv");
     }
 
-    private void deleteOldCsvFiles(File dir) {
+    // ── GPX saving ────────────────────────────────────────────────────────────
+
+    private void saveToGpx() {
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            return;
+        File dir  = docsDir();
+        Date now  = new Date();
+        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.gpx");
+
+        try {
+            if (!file.exists()) {
+                // Create new GPX file with header
+                FileWriter fw = new FileWriter(file);
+                fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                fw.write("<gpx version=\"1.1\" creator=\"Here I Am Now\"\n");
+                fw.write("    xmlns=\"http://www.topografix.com/GPX/1/1\"\n");
+                fw.write("    xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n");
+                fw.write("    xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
+                fw.write("  <trk>\n");
+                fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
+                fw.write("    <trkseg>\n");
+                fw.close();
+            } else {
+                // Strip closing tags so we can append before them
+                long closeBytes = GPX_CLOSE.getBytes("UTF-8").length;
+                RandomAccessFile raf = new RandomAccessFile(file, "rw");
+                long newLen = raf.length() - closeBytes;
+                if (newLen > 0) raf.setLength(newLen);
+                raf.close();
+            }
+
+            // Append the new trackpoint + closing tags
+            FileWriter fw = new FileWriter(file, true);
+            fw.write(String.format(Locale.US,
+                "      <trkpt lat=\"%.6f\" lon=\"%.6f\">\n" +
+                "        <ele>%.1f</ele>\n" +
+                "        <time>%s</time>\n" +
+                "        <sat>%d</sat>\n" +
+                "        <hdop>%.1f</hdop>\n" +
+                "      </trkpt>\n",
+                csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites, csvAccuracy));
+            fw.write(GPX_CLOSE);
+            fw.close();
+        } catch (IOException ignored) {}
+
+        deleteOldFiles(dir, "-hereiamnow.gpx");
+    }
+
+    // ── File helpers ──────────────────────────────────────────────────────────
+
+    private File docsDir() {
+        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    private void deleteOldFiles(File dir, String suffix) {
         long cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000;
         File[] files = dir.listFiles();
         if (files == null) return;
         for (File f : files) {
             String name = f.getName();
-            if (!name.endsWith("-hereiamnow.csv") || name.length() < 10) continue;
+            if (!name.endsWith(suffix) || name.length() < 10) continue;
             try {
                 Date fileDate = dateFmt.parse(name.substring(0, 10));
                 if (fileDate != null && fileDate.getTime() < cutoff) f.delete();
@@ -213,7 +276,7 @@ public class MainActivity extends Activity implements LocationListener {
     protected void onResume() {
         super.onResume();
         clockHandler.post(clockTick);
-        csvHandler.postDelayed(csvTick, 60000);
+        logHandler.postDelayed(logTick, 60000);
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
             startLocationUpdates();
     }
@@ -222,7 +285,7 @@ public class MainActivity extends Activity implements LocationListener {
     protected void onPause() {
         super.onPause();
         clockHandler.removeCallbacks(clockTick);
-        csvHandler.removeCallbacks(csvTick);
+        logHandler.removeCallbacks(logTick);
         locationManager.removeUpdates(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             locationManager.unregisterGnssStatusCallback(gnssCallback);
