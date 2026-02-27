@@ -311,6 +311,7 @@ public class MainActivity extends Activity implements LocationListener {
                     nextcloudPass = editPass.getText().toString();
                     saveSettings();
                     applyUpdateInterval();
+                    uploadFiles();
                 }
             })
             .setNegativeButton("Cancel", null)
