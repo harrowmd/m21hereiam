@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,11 +48,13 @@ public class MapView extends View {
     private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
+    // Track history points (lat, lon pairs) for the current 24-hour period
+    private List<double[]> trackPoints = new ArrayList<>();
+
     private final Paint tilePaint        = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint placeholderPaint = new Paint();
     private final Paint dotFill          = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dotBorder        = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dotCenter        = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint trackDotPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private final RectF tileRect = new RectF();
 
@@ -74,12 +78,15 @@ public class MapView extends View {
         dotFill.setColor(Color.parseColor("#2979FF"));
         dotFill.setStyle(Paint.Style.FILL);
 
-        dotBorder.setColor(Color.WHITE);
-        dotBorder.setStyle(Paint.Style.STROKE);
-        dotBorder.setStrokeWidth(5f);
+        trackDotPaint.setColor(Color.parseColor("#2979FF"));
+        trackDotPaint.setStyle(Paint.Style.FILL);
+        trackDotPaint.setAlpha(180);
+    }
 
-        dotCenter.setColor(Color.WHITE);
-        dotCenter.setStyle(Paint.Style.FILL);
+    /** Replace the track history shown on the map. Call from any thread. */
+    public void setTrackPoints(List<double[]> points) {
+        trackPoints = new ArrayList<>(points);
+        postInvalidate();
     }
 
     // ── Pinch gesture ─────────────────────────────────────────────────────────
@@ -304,7 +311,19 @@ public class MapView extends View {
             }
         }
 
-        // GPS dot: compute its screen position relative to the map centre
+        // Track history dots
+        List<double[]> pts = trackPoints;
+        for (double[] pt : pts) {
+            float ptx = (float) ((tileX(pt[1], zoom) + pixelXInTile(pt[1], zoom) / TILE_SIZE)
+                                  - (cx + (double) px / scaledTile));
+            float pty = (float) ((tileY(pt[0], zoom) + pixelYInTile(pt[0], zoom) / TILE_SIZE)
+                                  - (cy + (double) py / scaledTile));
+            float sx = W / 2f + ptx * scaledTile;
+            float sy = H / 2f + pty * scaledTile;
+            canvas.drawCircle(sx, sy, 4f, trackDotPaint);
+        }
+
+        // Current GPS dot — half the old size (9 instead of 18), plain filled blue
         float gpsTileX = (float) ((tileX(gpsLon, zoom) + pixelXInTile(gpsLon, zoom) / TILE_SIZE)
                                   - (cx + (double) px / scaledTile));
         float gpsTileY = (float) ((tileY(gpsLat, zoom) + pixelYInTile(gpsLat, zoom) / TILE_SIZE)
@@ -312,8 +331,6 @@ public class MapView extends View {
         float mx = W / 2f + gpsTileX * scaledTile;
         float my = H / 2f + gpsTileY * scaledTile;
 
-        canvas.drawCircle(mx, my, 18f, dotFill);
-        canvas.drawCircle(mx, my, 18f, dotBorder);
-        canvas.drawCircle(mx, my,  6f, dotCenter);
+        canvas.drawCircle(mx, my, 9f, dotFill);
     }
 }

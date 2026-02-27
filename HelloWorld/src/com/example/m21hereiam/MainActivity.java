@@ -30,12 +30,16 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.util.ArrayList;
+import java.util.List;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -113,6 +117,7 @@ public class MainActivity extends Activity implements LocationListener {
             saveToCsv();
             saveToGpx();
             saveToKml();
+            loadTrackPoints();
             logHandler.postDelayed(this, updateInterval);
         }
     };
@@ -370,6 +375,8 @@ public class MainActivity extends Activity implements LocationListener {
         if (last != null) updateDisplay(last);
     }
 
+    private boolean trackPointsLoaded = false;
+
     private void updateDisplay(Location loc) {
         csvLat      = loc.getLatitude();
         csvLon      = loc.getLongitude();
@@ -380,6 +387,10 @@ public class MainActivity extends Activity implements LocationListener {
         tvAlt.setText(String.format("Alt: %.1f m",     csvAlt));
         tvAccuracy.setText(String.format("Accuracy: %.1f m", csvAccuracy));
         mapView.setLocation(csvLat, csvLon);
+        if (!trackPointsLoaded) {
+            trackPointsLoaded = true;
+            loadTrackPoints();
+        }
     }
 
     @Override public void onLocationChanged(Location location) { updateDisplay(location); }
@@ -509,6 +520,51 @@ public class MainActivity extends Activity implements LocationListener {
 
     private String enc(String s) throws java.io.UnsupportedEncodingException {
         return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+    }
+
+    // ── Track history ─────────────────────────────────────────────────────────
+
+    private void loadTrackPoints() {
+        final File dir = docsDir();
+        final long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                List<double[]> points = new ArrayList<>();
+                // Read today's and yesterday's CSV files to cover the full 24-hour window
+                Date now       = new Date();
+                Date yesterday = new Date(now.getTime() - 24L * 60 * 60 * 1000);
+                String[] names = {
+                    dateFmt.format(yesterday) + "-hereiamnow.csv",
+                    dateFmt.format(now)        + "-hereiamnow.csv"
+                };
+                for (String name : names) {
+                    File f = new File(dir, name);
+                    if (!f.exists()) continue;
+                    try {
+                        BufferedReader br = new BufferedReader(new FileReader(f));
+                        String line;
+                        boolean header = true;
+                        while ((line = br.readLine()) != null) {
+                            if (header) { header = false; continue; } // skip header
+                            String[] cols = line.split(",");
+                            if (cols.length < 5) continue;
+                            try {
+                                Date ts = tsFmt.parse(cols[0]);
+                                if (ts == null || ts.getTime() < cutoff) continue;
+                                double lat = Double.parseDouble(cols[3]);
+                                double lon = Double.parseDouble(cols[4]);
+                                points.add(new double[]{lat, lon});
+                            } catch (Exception ignored) {}
+                        }
+                        br.close();
+                    } catch (IOException ignored) {}
+                }
+                final List<double[]> result = points;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() { mapView.setTrackPoints(result); }
+                });
+            }
+        }).start();
     }
 
     // ── CSV saving ────────────────────────────────────────────────────────────
