@@ -25,10 +25,10 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
 
+    private MapView mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
     private LocationManager locationManager;
     private GnssStatus.Callback gnssCallback;
-    private int satelliteCount = 0;
 
     private final Handler clockHandler = new Handler();
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
@@ -57,6 +57,7 @@ public class MainActivity extends Activity implements LocationListener {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        mapView      = (MapView)  findViewById(R.id.map_view);
         tvLat        = (TextView) findViewById(R.id.tv_lat);
         tvLon        = (TextView) findViewById(R.id.tv_lon);
         tvAlt        = (TextView) findViewById(R.id.tv_alt);
@@ -73,11 +74,11 @@ public class MainActivity extends Activity implements LocationListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
                 @Override public void onSatelliteStatusChanged(GnssStatus status) {
-                    satelliteCount = 0;
+                    int used = 0;
                     for (int i = 0; i < status.getSatelliteCount(); i++) {
-                        if (status.usedInFix(i)) satelliteCount++;
+                        if (status.usedInFix(i)) used++;
                     }
-                    tvSatellites.setText("Satellites: " + satelliteCount);
+                    tvSatellites.setText("Satellites: " + used);
                 }
             };
         }
@@ -90,9 +91,8 @@ public class MainActivity extends Activity implements LocationListener {
     }
 
     private void startLocationUpdates() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return;
+
         locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60000, 0, this);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
@@ -100,12 +100,8 @@ public class MainActivity extends Activity implements LocationListener {
         }
 
         Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-        if (last == null) {
-            last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-        }
-        if (last != null) {
-            updateDisplay(last);
-        }
+        if (last == null) last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+        if (last != null) updateDisplay(last);
     }
 
     private void updateDisplay(Location loc) {
@@ -113,6 +109,7 @@ public class MainActivity extends Activity implements LocationListener {
         tvLon.setText(String.format("Lon: %.6f", loc.getLongitude()));
         tvAlt.setText(String.format("Alt: %.1f m", loc.getAltitude()));
         tvAccuracy.setText(String.format("Accuracy: %.1f m", loc.getAccuracy()));
+        mapView.setLocation(loc.getLatitude(), loc.getLongitude());
     }
 
     @Override

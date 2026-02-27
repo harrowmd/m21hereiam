@@ -12,8 +12,10 @@ $BUILD_TOOLS/aapt2 link -o base_unsigned.apk -I $PLATFORM --manifest AndroidMani
 
 javac -source 8 -target 8 -classpath $PLATFORM -d obj \
   gen/com/example/helloworld/R.java \
+  src/com/example/helloworld/MapView.java \
   src/com/example/helloworld/MainActivity.java
 
+$BUILD_TOOLS/d8 --output dex obj/com/example/helloworld/*.class obj/com/example/helloworld/**/*.class 2>/dev/null || \
 $BUILD_TOOLS/d8 --output dex obj/com/example/helloworld/*.class
 
 cp base_unsigned.apk unsigned.apk

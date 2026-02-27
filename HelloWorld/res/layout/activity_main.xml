@@ -1,73 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
+
+    <com.example.helloworld.MapView
+        android:id="@+id/map_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:padding="24dp">
+        android:layout_gravity="bottom"
+        android:background="#CC000000"
+        android:orientation="horizontal"
+        android:padding="10dp">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Hello World"
-            android:textSize="64sp"
-            android:textStyle="bold"
-            android:textColor="#FF0000"
-            android:layout_marginBottom="32dp" />
+            android:layout_weight="1"
+            android:orientation="vertical">
 
-        <TextView android:id="@+id/tv_date"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Date: --"
-            android:textSize="22sp" />
+            <TextView android:id="@+id/tv_date"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Date: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Time: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_battery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Battery: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_satellites"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Satellites: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
 
-        <TextView android:id="@+id/tv_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Time: --"
-            android:textSize="22sp"
-            android:layout_marginBottom="24dp" />
+        </LinearLayout>
 
-        <TextView android:id="@+id/tv_lat"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Lat: --"
-            android:textSize="22sp" />
+            android:layout_weight="1"
+            android:orientation="vertical">
 
-        <TextView android:id="@+id/tv_lon"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Lon: --"
-            android:textSize="22sp" />
+            <TextView android:id="@+id/tv_lat"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Lat: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_lon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Lon: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_alt"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Alt: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <TextView android:id="@+id/tv_accuracy"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Accuracy: --"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
 
-        <TextView android:id="@+id/tv_alt"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Alt: --"
-            android:textSize="22sp" />
-
-        <TextView android:id="@+id/tv_accuracy"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Accuracy: --"
-            android:textSize="22sp" />
-
-        <TextView android:id="@+id/tv_satellites"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Satellites: --"
-            android:textSize="22sp"
-            android:layout_marginBottom="24dp" />
-
-        <TextView android:id="@+id/tv_battery"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Battery: --"
-            android:textSize="22sp" />
+        </LinearLayout>
 
     </LinearLayout>
-</ScrollView>
+
+</FrameLayout>
