@@ -1,4 +1,4 @@
-package com.example.helloworld;
+package com.example.m21hereiam;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -237,7 +237,7 @@ public class MapView extends View {
                 try {
                     URL url = new URL("https://tile.openstreetmap.org/" + key + ".png");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestProperty("User-Agent", "HelloWorldAndroidApp/1.0");
+                    conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
                     InputStream is = conn.getInputStream();

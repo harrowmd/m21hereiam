@@ -16,12 +16,12 @@ $BUILD_TOOLS/aapt2 compile res/mipmap-xxxhdpi/ic_launcher.png -o compiled_res/
 $BUILD_TOOLS/aapt2 link -o base_unsigned.apk -I $PLATFORM --manifest AndroidManifest.xml --java gen compiled_res/*.flat
 
 javac -source 8 -target 8 -classpath $PLATFORM -d obj \
-  gen/com/example/helloworld/R.java \
-  src/com/example/helloworld/MapView.java \
-  src/com/example/helloworld/MainActivity.java
+  gen/com/example/m21hereiam/R.java \
+  src/com/example/m21hereiam/MapView.java \
+  src/com/example/m21hereiam/MainActivity.java
 
-$BUILD_TOOLS/d8 --output dex obj/com/example/helloworld/*.class obj/com/example/helloworld/**/*.class 2>/dev/null || \
-$BUILD_TOOLS/d8 --output dex obj/com/example/helloworld/*.class
+$BUILD_TOOLS/d8 --output dex obj/com/example/m21hereiam/*.class obj/com/example/m21hereiam/**/*.class 2>/dev/null || \
+$BUILD_TOOLS/d8 --output dex obj/com/example/m21hereiam/*.class
 
 cp base_unsigned.apk unsigned.apk
 zip -j unsigned.apk dex/classes.dex

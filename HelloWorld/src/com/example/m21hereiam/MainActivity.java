@@ -1,4 +1,4 @@
-package com.example.helloworld;
+package com.example.m21hereiam;
 
 import android.Manifest;
 import android.app.Activity;
@@ -21,6 +21,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.text.InputType;
 import android.util.Base64;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -409,7 +410,9 @@ public class MainActivity extends Activity implements LocationListener {
                     String sessionDir = hereibDir + enc(sess) + "/";
 
                     int r1 = mkCol(hereibDir,  auth);
+                    Log.d("HereIAmNow", "MKCOL hereiam/: " + r1);
                     int r2 = mkCol(sessionDir, auth);
+                    Log.d("HereIAmNow", "MKCOL " + sess + "/: " + r2);
                     if (r1 >= 400 && r1 != 405) throw new IOException("hereiam/ MKCOL: " + r1);
                     if (r2 >= 400 && r2 != 405) throw new IOException(sess + "/ MKCOL: " + r2);
 
@@ -428,6 +431,7 @@ public class MainActivity extends Activity implements LocationListener {
                     }
                     result = "Uploaded " + uploaded + " file(s) \u2192 " + sess;
                 } catch (Exception e) {
+                    Log.e("HereIAmNow", "Upload failed", e);
                     final String err = "Upload failed: " + e.getMessage();
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
@@ -445,13 +449,37 @@ public class MainActivity extends Activity implements LocationListener {
         }).start();
     }
 
-    /** MKCOL — returns the HTTP response code. */
-    private int mkCol(String url, String auth) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setRequestMethod("MKCOL");
+    /** MKCOL — returns the HTTP response code.
+     *  Android's HttpURLConnection blocks MKCOL; we bypass it via reflection. */
+    private int mkCol(String urlStr, String auth) throws IOException {
+        URL url = new URL(urlStr);
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setRequestProperty("Authorization", auth);
         c.setConnectTimeout(15000);
         c.setReadTimeout(15000);
+
+        // Set MKCOL by writing the 'method' field directly (setRequestMethod rejects it)
+        try {
+            java.lang.reflect.Field mf = java.net.HttpURLConnection.class.getDeclaredField("method");
+            mf.setAccessible(true);
+            mf.set(c, "MKCOL");
+            // For HTTPS the connection delegates internally; find and set the delegate too
+            Class<?> cls = c.getClass();
+            while (cls != null && cls != java.net.HttpURLConnection.class) {
+                try {
+                    java.lang.reflect.Field df = cls.getDeclaredField("delegate");
+                    df.setAccessible(true);
+                    Object delegate = df.get(c);
+                    if (delegate instanceof java.net.HttpURLConnection)
+                        mf.set(delegate, "MKCOL");
+                    break;
+                } catch (NoSuchFieldException ignored) {}
+                cls = cls.getSuperclass();
+            }
+        } catch (Exception e) {
+            throw new IOException("Cannot set MKCOL method: " + e.getMessage());
+        }
+
         int code = c.getResponseCode();
         c.disconnect();
         return code;
