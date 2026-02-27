@@ -20,6 +20,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.text.InputType;
+import android.util.Base64;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -28,9 +29,14 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -40,12 +46,15 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
 
-    private static final String PREFS                 = "hereiamnow";
-    private static final String PREF_INTERVAL         = "update_interval_sec";
-    private static final String PREF_UPLOAD_INTERVAL  = "upload_interval_sec";
-    private static final String PREF_NC_URL           = "nextcloud_url";
-    private static final String PREF_NC_USER          = "nextcloud_user";
-    private static final String PREF_NC_PASS          = "nextcloud_pass";
+    private static final String PREFS                = "hereiamnow";
+    private static final String PREF_INTERVAL        = "update_interval_sec";
+    private static final String PREF_UPLOAD_INTERVAL = "upload_interval_sec";
+    private static final String PREF_NC_URL          = "nextcloud_url";
+    private static final String PREF_NC_USER         = "nextcloud_user";
+    private static final String PREF_NC_PASS         = "nextcloud_pass";
+    private static final String PREF_SESSION         = "session";
+
+    private static final String[] LOG_SUFFIXES = {"-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml"};
 
     // Closing tags for GPX / KML
     private static final String GPX_CLOSE = "    </trkseg>\n  </trk>\n</gpx>\n";
@@ -57,6 +66,7 @@ public class MainActivity extends Activity implements LocationListener {
     private String nextcloudUrl   = "https://cloud.manytwo.one";
     private String nextcloudUser  = "";
     private String nextcloudPass  = "";
+    private String session        = "mobyphone";
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
@@ -73,8 +83,9 @@ public class MainActivity extends Activity implements LocationListener {
     private int    csvBattery    = 0;
 
     // ── Handlers ──────────────────────────────────────────────────────────────
-    private final Handler clockHandler = new Handler();
-    private final Handler logHandler   = new Handler();
+    private final Handler clockHandler  = new Handler();
+    private final Handler logHandler    = new Handler();
+    private final Handler uploadHandler = new Handler();
 
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd",          Locale.getDefault());
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss",            Locale.getDefault());
@@ -101,6 +112,13 @@ public class MainActivity extends Activity implements LocationListener {
             saveToGpx();
             saveToKml();
             logHandler.postDelayed(this, updateInterval);
+        }
+    };
+
+    private final Runnable uploadTick = new Runnable() {
+        @Override public void run() {
+            uploadFiles();
+            uploadHandler.postDelayed(this, uploadInterval);
         }
     };
 
@@ -163,6 +181,7 @@ public class MainActivity extends Activity implements LocationListener {
         super.onResume();
         clockHandler.post(clockTick);
         logHandler.postDelayed(logTick, updateInterval);
+        uploadHandler.postDelayed(uploadTick, uploadInterval);
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
             startLocationUpdates();
     }
@@ -172,6 +191,7 @@ public class MainActivity extends Activity implements LocationListener {
         super.onPause();
         clockHandler.removeCallbacks(clockTick);
         logHandler.removeCallbacks(logTick);
+        uploadHandler.removeCallbacks(uploadTick);
         locationManager.removeUpdates(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             locationManager.unregisterGnssStatusCallback(gnssCallback);
@@ -192,6 +212,7 @@ public class MainActivity extends Activity implements LocationListener {
         nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.manytwo.one");
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
+        session        = p.getString(PREF_SESSION, "mobyphone");
     }
 
     private void saveSettings() {
@@ -201,27 +222,33 @@ public class MainActivity extends Activity implements LocationListener {
             .putString(PREF_NC_URL,  nextcloudUrl)
             .putString(PREF_NC_USER, nextcloudUser)
             .putString(PREF_NC_PASS, nextcloudPass)
+            .putString(PREF_SESSION, session)
             .apply();
     }
 
     private void applyUpdateInterval() {
-        // Restart location listener with new interval
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             locationManager.removeUpdates(this);
             locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, updateInterval, 0, this);
         }
-        // Reset log timer
         logHandler.removeCallbacks(logTick);
         logHandler.postDelayed(logTick, updateInterval);
+        uploadHandler.removeCallbacks(uploadTick);
+        uploadHandler.postDelayed(uploadTick, uploadInterval);
     }
 
     private void showSettingsDialog() {
+        int dp4  = Math.round(4  * getResources().getDisplayMetrics().density);
         int dp8  = Math.round(8  * getResources().getDisplayMetrics().density);
         int dp16 = Math.round(16 * getResources().getDisplayMetrics().density);
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp16, dp8, dp16, dp8);
+
+        layout.addView(label("Session name"));
+        final EditText editSession = editText(InputType.TYPE_CLASS_TEXT, session);
+        layout.addView(editSession);
 
         layout.addView(label("Update interval (seconds)"));
         final EditText editInterval = editText(InputType.TYPE_CLASS_NUMBER, String.valueOf(updateInterval / 1000));
@@ -242,37 +269,28 @@ public class MainActivity extends Activity implements LocationListener {
         layout.addView(label("Password"));
         final EditText editPass = editText(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, nextcloudPass);
 
-        // Row: password field + show/hide toggle
         final Button btnToggle = new Button(this);
         btnToggle.setText("Show");
         btnToggle.setTextSize(12);
-        btnToggle.setTag(Boolean.FALSE); // FALSE = currently hidden
-
-        LinearLayout passRow = new LinearLayout(this);
-        passRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams etParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        passRow.addView(editPass, etParams);
-        passRow.addView(btnToggle, btnParams);
-        layout.addView(passRow);
-
+        btnToggle.setTag(Boolean.FALSE);
         btnToggle.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 boolean hidden = (Boolean) btnToggle.getTag();
-                if (hidden) {
-                    // Currently visible → hide
-                    editPass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-                    btnToggle.setText("Show");
-                } else {
-                    // Currently hidden → show
-                    editPass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-                    btnToggle.setText("Hide");
-                }
+                editPass.setInputType(hidden
+                    ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                btnToggle.setText(hidden ? "Show" : "Hide");
                 btnToggle.setTag(!hidden);
-                editPass.setSelection(editPass.getText().length()); // keep cursor at end
+                editPass.setSelection(editPass.getText().length());
             }
         });
+
+        LinearLayout passRow = new LinearLayout(this);
+        passRow.setOrientation(LinearLayout.HORIZONTAL);
+        passRow.addView(editPass, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        passRow.addView(btnToggle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        layout.addView(passRow);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
@@ -282,14 +300,12 @@ public class MainActivity extends Activity implements LocationListener {
             .setView(scroll)
             .setPositiveButton("Save", new DialogInterface.OnClickListener() {
                 @Override public void onClick(DialogInterface dialog, int which) {
-                    try {
-                        int secs = Integer.parseInt(editInterval.getText().toString().trim());
-                        updateInterval = Math.max(10, secs) * 1000L;
-                    } catch (NumberFormatException ignored) {}
-                    try {
-                        int secs = Integer.parseInt(editUpload.getText().toString().trim());
-                        uploadInterval = Math.max(10, secs) * 1000L;
-                    } catch (NumberFormatException ignored) {}
+                    session = editSession.getText().toString().trim();
+                    if (session.isEmpty()) session = "mobyphone";
+                    try { updateInterval = Math.max(10, Integer.parseInt(editInterval.getText().toString().trim())) * 1000L; }
+                    catch (NumberFormatException ignored) {}
+                    try { uploadInterval = Math.max(10, Integer.parseInt(editUpload.getText().toString().trim())) * 1000L; }
+                    catch (NumberFormatException ignored) {}
                     nextcloudUrl  = editUrl.getText().toString().trim();
                     nextcloudUser = editUser.getText().toString().trim();
                     nextcloudPass = editPass.getText().toString();
@@ -368,6 +384,85 @@ public class MainActivity extends Activity implements LocationListener {
     @Override public void onProviderEnabled(String p) {}
     @Override public void onProviderDisabled(String p) {}
 
+    // ── Nextcloud upload ──────────────────────────────────────────────────────
+
+    private void uploadFiles() {
+        if (nextcloudUrl.isEmpty() || nextcloudUser.isEmpty()) return;
+
+        // Capture settings on the main thread before handing off
+        final String url  = nextcloudUrl.replaceAll("/+$", "");
+        final String user = nextcloudUser;
+        final String pass = nextcloudPass;
+        final String sess = session.isEmpty() ? "mobyphone" : session;
+        final File   dir  = docsDir();
+
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String auth = "Basic " + Base64.encodeToString(
+                        (user + ":" + pass).getBytes("UTF-8"), Base64.NO_WRAP);
+
+                    String davRoot    = url + "/remote.php/dav/files/" + enc(user) + "/";
+                    String hereibDir  = davRoot + "hereiam/";
+                    String sessionDir = hereibDir + enc(sess) + "/";
+
+                    mkCol(hereibDir,  auth);
+                    mkCol(sessionDir, auth);
+
+                    File[] files = dir.listFiles();
+                    if (files == null) return;
+                    for (File f : files) {
+                        for (String suffix : LOG_SUFFIXES) {
+                            if (f.getName().endsWith(suffix)) {
+                                putFile(f, sessionDir + enc(f.getName()), auth);
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
+    /** MKCOL — silently accepts 201 (created) and 405 (already exists). */
+    private void mkCol(String url, String auth) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestMethod("MKCOL");
+        c.setRequestProperty("Authorization", auth);
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(15000);
+        int code = c.getResponseCode();
+        c.disconnect();
+        if (code != 201 && code != 405 && code != 301 && code != 302)
+            throw new IOException("MKCOL " + url + " returned " + code);
+    }
+
+    /** PUT a local file to a WebDAV URL. */
+    private void putFile(File file, String url, String auth) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestMethod("PUT");
+        c.setRequestProperty("Authorization", auth);
+        c.setRequestProperty("Content-Type", "application/octet-stream");
+        c.setDoOutput(true);
+        c.setConnectTimeout(30000);
+        c.setReadTimeout(30000);
+
+        FileInputStream fis = new FileInputStream(file);
+        OutputStream    os  = c.getOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = fis.read(buf)) != -1) os.write(buf, 0, n);
+        fis.close();
+        os.close();
+
+        c.getResponseCode();
+        c.disconnect();
+    }
+
+    private String enc(String s) throws java.io.UnsupportedEncodingException {
+        return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+    }
+
     // ── CSV saving ────────────────────────────────────────────────────────────
 
     private void saveToCsv() {
@@ -405,25 +500,16 @@ public class MainActivity extends Activity implements LocationListener {
                 fw.write("    xmlns=\"http://www.topografix.com/GPX/1/1\"\n");
                 fw.write("    xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n");
                 fw.write("    xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
-                fw.write("  <trk>\n");
-                fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
-                fw.write("    <trkseg>\n");
+                fw.write("  <trk><name>" + dateFmt.format(now) + "</name><trkseg>\n");
                 fw.close();
             } else {
-                long closeBytes = GPX_CLOSE.getBytes("UTF-8").length;
                 RandomAccessFile raf = new RandomAccessFile(file, "rw");
-                long newLen = raf.length() - closeBytes;
-                if (newLen > 0) raf.setLength(newLen);
+                raf.setLength(raf.length() - GPX_CLOSE.getBytes("UTF-8").length);
                 raf.close();
             }
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US,
-                "      <trkpt lat=\"%.6f\" lon=\"%.6f\">\n" +
-                "        <ele>%.1f</ele>\n" +
-                "        <time>%s</time>\n" +
-                "        <sat>%d</sat>\n" +
-                "        <hdop>%.1f</hdop>\n" +
-                "      </trkpt>\n",
+                "      <trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele><time>%s</time><sat>%d</sat><hdop>%.1f</hdop></trkpt>\n",
                 csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites, csvAccuracy));
             fw.write(GPX_CLOSE);
             fw.close();
@@ -443,25 +529,16 @@ public class MainActivity extends Activity implements LocationListener {
             if (!file.exists()) {
                 FileWriter fw = new FileWriter(file);
                 fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
-                fw.write("  <Document>\n");
+                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n  <Document>\n");
                 fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
-                fw.write("    <Style id=\"track\">\n");
-                fw.write("      <LineStyle><color>ff0000ff</color><width>4</width></LineStyle>\n");
-                fw.write("    </Style>\n");
-                fw.write("    <Placemark>\n");
-                fw.write("      <name>Track</name>\n");
-                fw.write("      <styleUrl>#track</styleUrl>\n");
-                fw.write("      <LineString>\n");
-                fw.write("        <tessellate>1</tessellate>\n");
-                fw.write("        <altitudeMode>absolute</altitudeMode>\n");
+                fw.write("    <Style id=\"track\"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>\n");
+                fw.write("    <Placemark><name>Track</name><styleUrl>#track</styleUrl>\n");
+                fw.write("      <LineString><tessellate>1</tessellate><altitudeMode>absolute</altitudeMode>\n");
                 fw.write("        <coordinates>\n");
                 fw.close();
             } else {
-                long closeBytes = KML_CLOSE.getBytes("UTF-8").length;
                 RandomAccessFile raf = new RandomAccessFile(file, "rw");
-                long newLen = raf.length() - closeBytes;
-                if (newLen > 0) raf.setLength(newLen);
+                raf.setLength(raf.length() - KML_CLOSE.getBytes("UTF-8").length);
                 raf.close();
             }
             FileWriter fw = new FileWriter(file, true);
@@ -488,8 +565,8 @@ public class MainActivity extends Activity implements LocationListener {
             String name = f.getName();
             if (!name.endsWith(suffix) || name.length() < 10) continue;
             try {
-                Date fileDate = dateFmt.parse(name.substring(0, 10));
-                if (fileDate != null && fileDate.getTime() < cutoff) f.delete();
+                Date d = dateFmt.parse(name.substring(0, 10));
+                if (d != null && d.getTime() < cutoff) f.delete();
             } catch (java.text.ParseException ignored) {}
         }
     }
