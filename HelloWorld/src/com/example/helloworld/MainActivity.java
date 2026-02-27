@@ -33,8 +33,9 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
 
-    // GPX closing tags — always the tail of a valid GPX file
+    // Closing tags — always the tail of valid GPX/KML files
     private static final String GPX_CLOSE = "    </trkseg>\n  </trk>\n</gpx>\n";
+    private static final String KML_CLOSE = "        </coordinates>\n      </LineString>\n    </Placemark>\n  </Document>\n</kml>\n";
 
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
@@ -75,6 +76,7 @@ public class MainActivity extends Activity implements LocationListener {
         @Override public void run() {
             saveToCsv();
             saveToGpx();
+            saveToKml();
             logHandler.postDelayed(this, 60000);
         }
     };
@@ -246,6 +248,50 @@ public class MainActivity extends Activity implements LocationListener {
         } catch (IOException ignored) {}
 
         deleteOldFiles(dir, "-hereiamnow.gpx");
+    }
+
+    // ── KML saving ────────────────────────────────────────────────────────────
+
+    private void saveToKml() {
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            return;
+        File dir  = docsDir();
+        Date now  = new Date();
+        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.kml");
+
+        try {
+            if (!file.exists()) {
+                FileWriter fw = new FileWriter(file);
+                fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
+                fw.write("  <Document>\n");
+                fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
+                fw.write("    <Style id=\"track\">\n");
+                fw.write("      <LineStyle><color>ff0000ff</color><width>4</width></LineStyle>\n");
+                fw.write("    </Style>\n");
+                fw.write("    <Placemark>\n");
+                fw.write("      <name>Track</name>\n");
+                fw.write("      <styleUrl>#track</styleUrl>\n");
+                fw.write("      <LineString>\n");
+                fw.write("        <tessellate>1</tessellate>\n");
+                fw.write("        <altitudeMode>absolute</altitudeMode>\n");
+                fw.write("        <coordinates>\n");
+                fw.close();
+            } else {
+                long closeBytes = KML_CLOSE.getBytes("UTF-8").length;
+                RandomAccessFile raf = new RandomAccessFile(file, "rw");
+                long newLen = raf.length() - closeBytes;
+                if (newLen > 0) raf.setLength(newLen);
+                raf.close();
+            }
+
+            FileWriter fw = new FileWriter(file, true);
+            fw.write(String.format(Locale.US, "          %.6f,%.6f,%.1f\n", csvLon, csvLat, csvAlt));
+            fw.write(KML_CLOSE);
+            fw.close();
+        } catch (IOException ignored) {}
+
+        deleteOldFiles(dir, "-hereiamnow.kml");
     }
 
     // ── File helpers ──────────────────────────────────────────────────────────
