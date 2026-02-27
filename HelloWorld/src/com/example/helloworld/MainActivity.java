@@ -15,6 +15,8 @@ import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.view.View;
+import android.widget.Button;
 import android.widget.TextView;
 
 import java.text.SimpleDateFormat;
@@ -66,6 +68,11 @@ public class MainActivity extends Activity implements LocationListener {
         tvBattery    = (TextView) findViewById(R.id.tv_battery);
         tvDate       = (TextView) findViewById(R.id.tv_date);
         tvTime       = (TextView) findViewById(R.id.tv_time);
+
+        Button btnRecentre = (Button) findViewById(R.id.btn_recentre);
+        btnRecentre.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { mapView.recentre(); }
+        });
 
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
 

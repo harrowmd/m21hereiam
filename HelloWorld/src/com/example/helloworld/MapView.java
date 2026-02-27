@@ -166,6 +166,13 @@ public class MapView extends View {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
+    public void recentre() {
+        centerLat = gpsLat;
+        centerLon = gpsLon;
+        prefetchTiles();
+        postInvalidate();
+    }
+
     public void setLocation(double lat, double lon) {
         this.gpsLat = lat;
         this.gpsLon = lon;
