@@ -13,4 +13,20 @@
         android:textStyle="bold"
         android:textColor="#FF0000" />
 
+    <TextView
+        android:id="@+id/tv_lat"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Lat: --"
+        android:textSize="24sp"
+        android:layout_marginTop="32dp" />
+
+    <TextView
+        android:id="@+id/tv_lon"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Lon: --"
+        android:textSize="24sp"
+        android:layout_marginTop="8dp" />
+
 </LinearLayout>
