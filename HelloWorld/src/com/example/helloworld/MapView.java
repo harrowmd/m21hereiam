@@ -29,9 +29,18 @@ public class MapView extends View {
     private int   zoom         = 16;
     private float displayScale = 1.0f;   // visual scale between integer zoom levels
 
-    private double  lat         = 0;
-    private double  lon         = 0;
+    // Map centre (moves when panning)
+    private double  centerLat   = 0;
+    private double  centerLon   = 0;
+    // GPS fix position (for the dot)
+    private double  gpsLat      = 0;
+    private double  gpsLon      = 0;
     private boolean hasLocation = false;
+
+    // Pan gesture state
+    private float   lastTouchX  = 0;
+    private float   lastTouchY  = 0;
+    private boolean isDragging  = false;
 
     private final ConcurrentHashMap<String, Bitmap>  tileCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
@@ -102,14 +111,69 @@ public class MapView extends View {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         scaleDetector.onTouchEvent(event);
+
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                lastTouchX = event.getX();
+                lastTouchY = event.getY();
+                isDragging = true;
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+            case MotionEvent.ACTION_POINTER_UP:
+                // Reset anchor when finger count changes to avoid jump
+                lastTouchX = event.getX(0);
+                lastTouchY = event.getY(0);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (isDragging && !scaleDetector.isInProgress() && event.getPointerCount() == 1) {
+                    float dx = event.getX() - lastTouchX;
+                    float dy = event.getY() - lastTouchY;
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    pan(dx, dy);
+                } else {
+                    // Keep anchor up to date during pinch so release doesn't jump
+                    lastTouchX = event.getX(0);
+                    lastTouchY = event.getY(0);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                isDragging = false;
+                break;
+        }
         return true;
+    }
+
+    private void pan(float dx, float dy) {
+        float scaledTile = TILE_SIZE * displayScale;
+        int   tiles      = 1 << zoom;
+
+        // Longitude: linear
+        centerLon -= dx * 360.0 / (scaledTile * tiles);
+        // Wrap to [-180, 180]
+        centerLon = ((centerLon + 180) % 360 + 360) % 360 - 180;
+
+        // Latitude: Mercator inverse
+        double yMerc = Math.log(Math.tan(Math.PI / 4.0 + Math.toRadians(centerLat) / 2.0));
+        yMerc += dy * 2.0 * Math.PI / (scaledTile * tiles);
+        yMerc = Math.max(-Math.PI, Math.min(Math.PI, yMerc));
+        centerLat = Math.toDegrees(2.0 * Math.atan(Math.exp(yMerc)) - Math.PI / 2.0);
+
+        prefetchTiles();
+        invalidate();
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     public void setLocation(double lat, double lon) {
-        this.lat = lat;
-        this.lon = lon;
+        this.gpsLat = lat;
+        this.gpsLon = lon;
+        if (!hasLocation) {
+            // First fix: centre the map on the GPS position
+            this.centerLat = lat;
+            this.centerLon = lon;
+        }
         this.hasLocation = true;
         prefetchTiles();
         postInvalidate();
@@ -145,8 +209,8 @@ public class MapView extends View {
     // ── Tile fetching ─────────────────────────────────────────────────────────
 
     private void prefetchTiles() {
-        int cx      = tileX(lon, zoom);
-        int cy      = tileY(lat, zoom);
+        int cx      = tileX(centerLon, zoom);
+        int cy      = tileY(centerLat, zoom);
         int maxTile = (1 << zoom) - 1;
         for (int dy = -4; dy <= 4; dy++) {
             for (int dx = -4; dx <= 4; dx++) {
@@ -195,14 +259,15 @@ public class MapView extends View {
             return;
         }
 
-        int   W             = getWidth();
-        int   H             = getHeight();
-        float scaledTile    = TILE_SIZE * displayScale;
+        int   W          = getWidth();
+        int   H          = getHeight();
+        float scaledTile = TILE_SIZE * displayScale;
 
-        int   cx  = tileX(lon, zoom);
-        int   cy  = tileY(lat, zoom);
-        float px  = (float) pixelXInTile(lon, zoom) * displayScale;
-        float py  = (float) pixelYInTile(lat, zoom) * displayScale;
+        // Tile grid anchored on map centre
+        int   cx = tileX(centerLon, zoom);
+        int   cy = tileY(centerLat, zoom);
+        float px = (float) pixelXInTile(centerLon, zoom) * displayScale;
+        float py = (float) pixelYInTile(centerLat, zoom) * displayScale;
 
         float tileLeft = W / 2f - px;
         float tileTop  = H / 2f - py;
@@ -232,9 +297,14 @@ public class MapView extends View {
             }
         }
 
-        // Location dot at screen centre
-        float mx = W / 2f;
-        float my = H / 2f;
+        // GPS dot: compute its screen position relative to the map centre
+        float gpsTileX = (float) ((tileX(gpsLon, zoom) + pixelXInTile(gpsLon, zoom) / TILE_SIZE)
+                                  - (cx + (double) px / scaledTile));
+        float gpsTileY = (float) ((tileY(gpsLat, zoom) + pixelYInTile(gpsLat, zoom) / TILE_SIZE)
+                                  - (cy + (double) py / scaledTile));
+        float mx = W / 2f + gpsTileX * scaledTile;
+        float my = H / 2f + gpsTileY * scaledTile;
+
         canvas.drawCircle(mx, my, 18f, dotFill);
         canvas.drawCircle(mx, my, 18f, dotBorder);
         canvas.drawCircle(mx, my,  6f, dotCenter);
