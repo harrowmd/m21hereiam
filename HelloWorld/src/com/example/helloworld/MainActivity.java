@@ -2,10 +2,13 @@ package com.example.helloworld;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.GnssStatus;
 import android.location.Location;
@@ -16,8 +19,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.text.InputType;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
@@ -33,16 +40,29 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int LOCATION_PERMISSION_REQUEST = 1;
 
-    // Closing tags — always the tail of valid GPX/KML files
+    private static final String PREFS            = "hereiamnow";
+    private static final String PREF_INTERVAL    = "update_interval_sec";
+    private static final String PREF_NC_URL      = "nextcloud_url";
+    private static final String PREF_NC_USER     = "nextcloud_user";
+    private static final String PREF_NC_PASS     = "nextcloud_pass";
+
+    // Closing tags for GPX / KML
     private static final String GPX_CLOSE = "    </trkseg>\n  </trk>\n</gpx>\n";
     private static final String KML_CLOSE = "        </coordinates>\n      </LineString>\n    </Placemark>\n  </Document>\n</kml>\n";
 
+    // ── Settings (persisted) ──────────────────────────────────────────────────
+    private long   updateInterval = 60_000;
+    private String nextcloudUrl   = "https://cloud.manytwo.one";
+    private String nextcloudUser  = "";
+    private String nextcloudPass  = "";
+
+    // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
     private LocationManager locationManager;
     private GnssStatus.Callback gnssCallback;
 
-    // Current values for logging
+    // ── Current sensor values ─────────────────────────────────────────────────
     private double csvLat        = 0;
     private double csvLon        = 0;
     private double csvAlt        = 0;
@@ -50,13 +70,14 @@ public class MainActivity extends Activity implements LocationListener {
     private int    csvSatellites = 0;
     private int    csvBattery    = 0;
 
+    // ── Handlers ──────────────────────────────────────────────────────────────
     private final Handler clockHandler = new Handler();
     private final Handler logHandler   = new Handler();
 
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd",          Locale.getDefault());
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss",            Locale.getDefault());
     private final SimpleDateFormat tsFmt   = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-    private final SimpleDateFormat isoFmt;   // UTC ISO-8601 for GPX <time>
+    private final SimpleDateFormat isoFmt;
 
     {
         isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
@@ -77,7 +98,7 @@ public class MainActivity extends Activity implements LocationListener {
             saveToCsv();
             saveToGpx();
             saveToKml();
-            logHandler.postDelayed(this, 60000);
+            logHandler.postDelayed(this, updateInterval);
         }
     };
 
@@ -90,10 +111,14 @@ public class MainActivity extends Activity implements LocationListener {
         }
     };
 
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        loadSettings();
 
         mapView      = (MapView)  findViewById(R.id.map_view);
         tvLat        = (TextView) findViewById(R.id.tv_lat);
@@ -105,9 +130,11 @@ public class MainActivity extends Activity implements LocationListener {
         tvDate       = (TextView) findViewById(R.id.tv_date);
         tvTime       = (TextView) findViewById(R.id.tv_time);
 
-        Button btnRecentre = (Button) findViewById(R.id.btn_recentre);
-        btnRecentre.setOnClickListener(new View.OnClickListener() {
+        ((Button) findViewById(R.id.btn_recentre)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { mapView.recentre(); }
+        });
+        ((Button) findViewById(R.id.btn_settings)).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showSettingsDialog(); }
         });
 
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
@@ -127,6 +154,125 @@ public class MainActivity extends Activity implements LocationListener {
         }
 
         requestNeededPermissions();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        clockHandler.post(clockTick);
+        logHandler.postDelayed(logTick, updateInterval);
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+            startLocationUpdates();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        clockHandler.removeCallbacks(clockTick);
+        logHandler.removeCallbacks(logTick);
+        locationManager.removeUpdates(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
+            locationManager.unregisterGnssStatusCallback(gnssCallback);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        unregisterReceiver(batteryReceiver);
+    }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+
+    private void loadSettings() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        updateInterval = p.getInt(PREF_INTERVAL, 60) * 1000L;
+        nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.manytwo.one");
+        nextcloudUser  = p.getString(PREF_NC_USER, "");
+        nextcloudPass  = p.getString(PREF_NC_PASS, "");
+    }
+
+    private void saveSettings() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt(PREF_INTERVAL, (int) (updateInterval / 1000))
+            .putString(PREF_NC_URL,  nextcloudUrl)
+            .putString(PREF_NC_USER, nextcloudUser)
+            .putString(PREF_NC_PASS, nextcloudPass)
+            .apply();
+    }
+
+    private void applyUpdateInterval() {
+        // Restart location listener with new interval
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            locationManager.removeUpdates(this);
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, updateInterval, 0, this);
+        }
+        // Reset log timer
+        logHandler.removeCallbacks(logTick);
+        logHandler.postDelayed(logTick, updateInterval);
+    }
+
+    private void showSettingsDialog() {
+        int dp8  = Math.round(8  * getResources().getDisplayMetrics().density);
+        int dp16 = Math.round(16 * getResources().getDisplayMetrics().density);
+
+        // Helper to create a labelled EditText pair
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp16, dp8, dp16, dp8);
+
+        layout.addView(label("Update interval (seconds)"));
+        final EditText editInterval = editText(InputType.TYPE_CLASS_NUMBER, String.valueOf(updateInterval / 1000));
+        layout.addView(editInterval);
+
+        layout.addView(label("Nextcloud / OwnCloud URL"));
+        final EditText editUrl = editText(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, nextcloudUrl);
+        layout.addView(editUrl);
+
+        layout.addView(label("Username"));
+        final EditText editUser = editText(InputType.TYPE_CLASS_TEXT, nextcloudUser);
+        layout.addView(editUser);
+
+        layout.addView(label("Password"));
+        final EditText editPass = editText(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, nextcloudPass);
+        layout.addView(editPass);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Settings")
+            .setView(scroll)
+            .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    try {
+                        int secs = Integer.parseInt(editInterval.getText().toString().trim());
+                        updateInterval = Math.max(10, secs) * 1000L;
+                    } catch (NumberFormatException ignored) {}
+                    nextcloudUrl  = editUrl.getText().toString().trim();
+                    nextcloudUser = editUser.getText().toString().trim();
+                    nextcloudPass = editPass.getText().toString();
+                    saveSettings();
+                    applyUpdateInterval();
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private TextView label(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(13);
+        int dp4 = Math.round(4 * getResources().getDisplayMetrics().density);
+        tv.setPadding(0, dp4 * 3, 0, dp4);
+        return tv;
+    }
+
+    private EditText editText(int inputType, String value) {
+        EditText et = new EditText(this);
+        et.setInputType(inputType);
+        et.setText(value);
+        return et;
     }
 
     // ── Permissions ───────────────────────────────────────────────────────────
@@ -155,7 +301,7 @@ public class MainActivity extends Activity implements LocationListener {
             tvLat.setText("Location permission denied");
             return;
         }
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60000, 0, this);
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, updateInterval, 0, this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             locationManager.registerGnssStatusCallback(gnssCallback);
         Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
@@ -185,7 +331,7 @@ public class MainActivity extends Activity implements LocationListener {
     private void saveToCsv() {
         if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             return;
-        File dir = docsDir();
+        File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
         boolean isNew = !file.exists();
@@ -198,7 +344,6 @@ public class MainActivity extends Activity implements LocationListener {
                 csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
             fw.close();
         } catch (IOException ignored) {}
-
         deleteOldFiles(dir, "-hereiamnow.csv");
     }
 
@@ -210,10 +355,8 @@ public class MainActivity extends Activity implements LocationListener {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.gpx");
-
         try {
             if (!file.exists()) {
-                // Create new GPX file with header
                 FileWriter fw = new FileWriter(file);
                 fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
                 fw.write("<gpx version=\"1.1\" creator=\"Here I Am Now\"\n");
@@ -225,15 +368,12 @@ public class MainActivity extends Activity implements LocationListener {
                 fw.write("    <trkseg>\n");
                 fw.close();
             } else {
-                // Strip closing tags so we can append before them
                 long closeBytes = GPX_CLOSE.getBytes("UTF-8").length;
                 RandomAccessFile raf = new RandomAccessFile(file, "rw");
                 long newLen = raf.length() - closeBytes;
                 if (newLen > 0) raf.setLength(newLen);
                 raf.close();
             }
-
-            // Append the new trackpoint + closing tags
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US,
                 "      <trkpt lat=\"%.6f\" lon=\"%.6f\">\n" +
@@ -246,7 +386,6 @@ public class MainActivity extends Activity implements LocationListener {
             fw.write(GPX_CLOSE);
             fw.close();
         } catch (IOException ignored) {}
-
         deleteOldFiles(dir, "-hereiamnow.gpx");
     }
 
@@ -258,7 +397,6 @@ public class MainActivity extends Activity implements LocationListener {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.kml");
-
         try {
             if (!file.exists()) {
                 FileWriter fw = new FileWriter(file);
@@ -284,13 +422,11 @@ public class MainActivity extends Activity implements LocationListener {
                 if (newLen > 0) raf.setLength(newLen);
                 raf.close();
             }
-
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US, "          %.6f,%.6f,%.1f\n", csvLon, csvLat, csvAlt));
             fw.write(KML_CLOSE);
             fw.close();
         } catch (IOException ignored) {}
-
         deleteOldFiles(dir, "-hereiamnow.kml");
     }
 
@@ -314,32 +450,5 @@ public class MainActivity extends Activity implements LocationListener {
                 if (fileDate != null && fileDate.getTime() < cutoff) f.delete();
             } catch (java.text.ParseException ignored) {}
         }
-    }
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        clockHandler.post(clockTick);
-        logHandler.postDelayed(logTick, 60000);
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
-            startLocationUpdates();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        clockHandler.removeCallbacks(clockTick);
-        logHandler.removeCallbacks(logTick);
-        locationManager.removeUpdates(this);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
-            locationManager.unregisterGnssStatusCallback(gnssCallback);
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        unregisterReceiver(batteryReceiver);
     }
 }
