@@ -6,7 +6,10 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 
 import java.io.IOException;
@@ -19,25 +22,42 @@ import java.util.concurrent.Executors;
 
 public class MapView extends View {
 
-    private static final int ZOOM = 16;
-    private static final int TILE_SIZE = 256;
+    private static final int TILE_SIZE  = 256;
+    private static final int MIN_ZOOM   = 1;
+    private static final int MAX_ZOOM   = 19;
 
-    private double lat = 0, lon = 0;
+    private int   zoom         = 16;
+    private float displayScale = 1.0f;   // visual scale between integer zoom levels
+
+    private double  lat         = 0;
+    private double  lon         = 0;
     private boolean hasLocation = false;
 
-    private final ConcurrentHashMap<String, Bitmap> tileCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Bitmap>  tileCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
-    private final Paint tilePaint        = new Paint();
+    private final Paint tilePaint        = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint placeholderPaint = new Paint();
     private final Paint dotFill          = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dotBorder        = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dotCenter        = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint accuracyPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    public MapView(Context context) { super(context); init(); }
-    public MapView(Context context, AttributeSet attrs) { super(context, attrs); init(); }
+    private final RectF tileRect = new RectF();
+
+    private final ScaleGestureDetector scaleDetector;
+
+    public MapView(Context context) {
+        super(context);
+        scaleDetector = new ScaleGestureDetector(context, new PinchListener());
+        init();
+    }
+
+    public MapView(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        scaleDetector = new ScaleGestureDetector(context, new PinchListener());
+        init();
+    }
 
     private void init() {
         placeholderPaint.setColor(Color.parseColor("#D0D0D0"));
@@ -51,10 +71,41 @@ public class MapView extends View {
 
         dotCenter.setColor(Color.WHITE);
         dotCenter.setStyle(Paint.Style.FILL);
-
-        accuracyPaint.setColor(Color.parseColor("#402979FF"));
-        accuracyPaint.setStyle(Paint.Style.FILL);
     }
+
+    // ── Pinch gesture ─────────────────────────────────────────────────────────
+
+    private class PinchListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+        @Override
+        public boolean onScale(ScaleGestureDetector detector) {
+            displayScale *= detector.getScaleFactor();
+            displayScale  = Math.max(0.25f, Math.min(displayScale, 4.0f));
+
+            // Promote to next integer zoom level when we've scaled 2×
+            while (displayScale >= 2.0f && zoom < MAX_ZOOM) {
+                zoom++;
+                displayScale /= 2.0f;
+                prefetchTiles();
+            }
+            // Demote when we've shrunk to half
+            while (displayScale <= 0.5f && zoom > MIN_ZOOM) {
+                zoom--;
+                displayScale *= 2.0f;
+                prefetchTiles();
+            }
+
+            invalidate();
+            return true;
+        }
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        scaleDetector.onTouchEvent(event);
+        return true;
+    }
+
+    // ── Public API ────────────────────────────────────────────────────────────
 
     public void setLocation(double lat, double lon) {
         this.lat = lat;
@@ -64,45 +115,44 @@ public class MapView extends View {
         postInvalidate();
     }
 
-    // --- Tile math ---
+    // ── Tile math ─────────────────────────────────────────────────────────────
 
-    private int tileX(double lon) {
-        return (int) Math.floor((lon + 180.0) / 360.0 * (1 << ZOOM));
+    private int tileX(double lon, int z) {
+        return (int) Math.floor((lon + 180.0) / 360.0 * (1 << z));
     }
 
-    private int tileY(double lat) {
+    private int tileY(double lat, int z) {
         double r = Math.toRadians(lat);
-        return (int) Math.floor((1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * (1 << ZOOM));
+        return (int) Math.floor((1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * (1 << z));
     }
 
-    private double pixelXInTile(double lon) {
-        double exact = (lon + 180.0) / 360.0 * (1 << ZOOM);
+    private double pixelXInTile(double lon, int z) {
+        double exact = (lon + 180.0) / 360.0 * (1 << z);
         return (exact - Math.floor(exact)) * TILE_SIZE;
     }
 
-    private double pixelYInTile(double lat) {
+    private double pixelYInTile(double lat, int z) {
         double r = Math.toRadians(lat);
-        double exact = (1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * (1 << ZOOM);
+        double exact = (1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * (1 << z);
         return (exact - Math.floor(exact)) * TILE_SIZE;
     }
 
-    // Metres per pixel at this zoom/latitude (used to draw accuracy circle)
-    private float metresPerPixel() {
-        return (float) (156543.03392 * Math.cos(Math.toRadians(lat)) / (1 << ZOOM));
+    private int wrapX(int x, int z) {
+        int max = 1 << z;
+        return ((x % max) + max) % max;
     }
 
-    // --- Tile fetching ---
+    // ── Tile fetching ─────────────────────────────────────────────────────────
 
     private void prefetchTiles() {
-        int cx = tileX(lon);
-        int cy = tileY(lat);
-        int maxTile = (1 << ZOOM) - 1;
+        int cx      = tileX(lon, zoom);
+        int cy      = tileY(lat, zoom);
+        int maxTile = (1 << zoom) - 1;
         for (int dy = -4; dy <= 4; dy++) {
             for (int dx = -4; dx <= 4; dx++) {
                 int ty = cy + dy;
                 if (ty < 0 || ty > maxTile) continue;
-                int tx = wrapX(cx + dx);
-                fetchTile(ZOOM, tx, ty);
+                fetchTile(zoom, wrapX(cx + dx, zoom), ty);
             }
         }
     }
@@ -134,12 +184,7 @@ public class MapView extends View {
         });
     }
 
-    private int wrapX(int x) {
-        int max = 1 << ZOOM;
-        return ((x % max) + max) % max;
-    }
-
-    // --- Drawing ---
+    // ── Drawing ───────────────────────────────────────────────────────────────
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -150,45 +195,46 @@ public class MapView extends View {
             return;
         }
 
-        int W = getWidth();
-        int H = getHeight();
+        int   W             = getWidth();
+        int   H             = getHeight();
+        float scaledTile    = TILE_SIZE * displayScale;
 
-        int cx = tileX(lon);
-        int cy = tileY(lat);
-        float px = (float) pixelXInTile(lon);
-        float py = (float) pixelYInTile(lat);
+        int   cx  = tileX(lon, zoom);
+        int   cy  = tileY(lat, zoom);
+        float px  = (float) pixelXInTile(lon, zoom) * displayScale;
+        float py  = (float) pixelYInTile(lat, zoom) * displayScale;
 
-        // Top-left pixel of the centre tile on screen
         float tileLeft = W / 2f - px;
         float tileTop  = H / 2f - py;
 
-        int maxTile = (1 << ZOOM) - 1;
-        int range = 5;
+        int maxTile = (1 << zoom) - 1;
+        int range   = (int) Math.ceil(Math.max(W, H) / scaledTile / 2) + 1;
 
         for (int dy = -range; dy <= range; dy++) {
             for (int dx = -range; dx <= range; dx++) {
-                float drawX = tileLeft + dx * TILE_SIZE;
-                float drawY = tileTop  + dy * TILE_SIZE;
-                if (drawX + TILE_SIZE < 0 || drawX > W) continue;
-                if (drawY + TILE_SIZE < 0 || drawY > H) continue;
+                float drawX = tileLeft + dx * scaledTile;
+                float drawY = tileTop  + dy * scaledTile;
+                if (drawX + scaledTile < 0 || drawX > W) continue;
+                if (drawY + scaledTile < 0 || drawY > H) continue;
                 int ty = cy + dy;
                 if (ty < 0 || ty > maxTile) continue;
-                int tx = wrapX(cx + dx);
-                String key = ZOOM + "/" + tx + "/" + ty;
+                int tx = wrapX(cx + dx, zoom);
+
+                String key  = zoom + "/" + tx + "/" + ty;
                 Bitmap tile = tileCache.get(key);
+                tileRect.set(drawX, drawY, drawX + scaledTile, drawY + scaledTile);
                 if (tile != null) {
-                    canvas.drawBitmap(tile, drawX, drawY, tilePaint);
+                    canvas.drawBitmap(tile, null, tileRect, tilePaint);
                 } else {
-                    canvas.drawRect(drawX, drawY, drawX + TILE_SIZE, drawY + TILE_SIZE, placeholderPaint);
-                    fetchTile(ZOOM, tx, ty);
+                    canvas.drawRect(tileRect, placeholderPaint);
+                    fetchTile(zoom, tx, ty);
                 }
             }
         }
 
-        // Location marker at screen centre
+        // Location dot at screen centre
         float mx = W / 2f;
         float my = H / 2f;
-
         canvas.drawCircle(mx, my, 18f, dotFill);
         canvas.drawCircle(mx, my, 18f, dotBorder);
         canvas.drawCircle(mx, my,  6f, dotCenter);
