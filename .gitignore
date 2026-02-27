@@ -1,0 +1,8 @@
+HelloWorld/compiled_res/
+HelloWorld/gen/
+HelloWorld/obj/
+HelloWorld/dex/
+HelloWorld/base.apk
+HelloWorld/base_unsigned.apk
+HelloWorld/unsigned.apk
+HelloWorld/aligned.apk
