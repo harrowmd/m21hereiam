@@ -8,6 +8,11 @@ mkdir -p compiled_res gen obj dex
 
 $BUILD_TOOLS/aapt2 compile res/layout/activity_main.xml -o compiled_res/
 $BUILD_TOOLS/aapt2 compile res/values/strings.xml -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/mipmap-mdpi/ic_launcher.png -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/mipmap-hdpi/ic_launcher.png -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/mipmap-xhdpi/ic_launcher.png -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/mipmap-xxhdpi/ic_launcher.png -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/mipmap-xxxhdpi/ic_launcher.png -o compiled_res/
 $BUILD_TOOLS/aapt2 link -o base_unsigned.apk -I $PLATFORM --manifest AndroidManifest.xml --java gen compiled_res/*.flat
 
 javac -source 8 -target 8 -classpath $PLATFORM -d obj \

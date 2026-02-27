@@ -13,6 +13,7 @@
 
     <application
         android:label="Here I Am Now"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
