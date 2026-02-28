@@ -33,7 +33,8 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements LocationService.Listener {
 
-    private static final int PERM_REQUEST = 1;
+    private static final int PERM_REQUEST    = 1;
+    private static final int PERM_REQUEST_BG = 2;
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
@@ -120,6 +121,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED) {
             startAndBindService();
+            requestBackgroundLocationIfNeeded();
         }
     }
 
@@ -346,8 +348,23 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     @Override
     public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
-        startAndBindService();
-        if (bound) service.startLocationUpdates();
+        if (req == PERM_REQUEST) {
+            startAndBindService();
+            if (bound) service.startLocationUpdates();
+            // On Android 10+, request background location separately after fine is granted
+            requestBackgroundLocationIfNeeded();
+        }
+        // PERM_REQUEST_BG result: nothing to do, service will get GPS if granted
+    }
+
+    private void requestBackgroundLocationIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                   != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
+                PERM_REQUEST_BG);
+        }
     }
 
     private void startAndBindService() {

@@ -119,6 +119,8 @@ public class LocationService extends Service implements LocationListener {
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
 
+    boolean hasLocation = false; // true once a real GPS fix has been received
+
     // ── Alert state ───────────────────────────────────────────────────────────
     volatile boolean     alertActive    = false;
     volatile boolean     alertCancelled = false;
@@ -290,6 +292,10 @@ public class LocationService extends Service implements LocationListener {
         csvLon      = loc.getLongitude();
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
+        if (!hasLocation) {
+            hasLocation = true;
+            writeLog("First GPS fix received");
+        }
         writeLog(String.format(Locale.US,
             "GPS fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
             csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
@@ -617,6 +623,7 @@ public class LocationService extends Service implements LocationListener {
     // ── CSV / GPX / KML saving ────────────────────────────────────────────────
 
     private void saveToCsv() {
+        if (!hasLocation) { writeLog("Log tick: no GPS fix yet, skipping"); return; }
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
@@ -637,6 +644,7 @@ public class LocationService extends Service implements LocationListener {
     }
 
     private void saveToGpx() {
+        if (!hasLocation) return;
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.gpx");
@@ -668,6 +676,7 @@ public class LocationService extends Service implements LocationListener {
     }
 
     private void saveToKml() {
+        if (!hasLocation) return;
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.kml");
