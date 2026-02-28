@@ -217,6 +217,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         layout.addView(passRow);
 
+        layout.addView(label("Alert code"));
+        final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
+        layout.addView(editAlertCode);
+
         TextView tvBuildInfo = new TextView(this);
         tvBuildInfo.setText(getBuildInfo());
         tvBuildInfo.setTextSize(11);
@@ -243,16 +247,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUrl  = editUrl.getText().toString().trim();
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
+                    service.alertCode     = editAlertCode.getText().toString().trim();
                     // Persist to SharedPreferences
                     getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit()
                         .putInt(LocationService.PREF_INTERVAL,
                             (int) (service.updateInterval / 1000))
                         .putInt(LocationService.PREF_UPLOAD_INTERVAL,
                             (int) (service.uploadInterval / 1000))
-                        .putString(LocationService.PREF_NC_URL,  service.nextcloudUrl)
-                        .putString(LocationService.PREF_NC_USER, service.nextcloudUser)
-                        .putString(LocationService.PREF_NC_PASS, service.nextcloudPass)
-                        .putString(LocationService.PREF_SESSION, service.session)
+                        .putString(LocationService.PREF_NC_URL,    service.nextcloudUrl)
+                        .putString(LocationService.PREF_NC_USER,   service.nextcloudUser)
+                        .putString(LocationService.PREF_NC_PASS,   service.nextcloudPass)
+                        .putString(LocationService.PREF_SESSION,   service.session)
+                        .putString(LocationService.PREF_ALERT_CODE, service.alertCode)
                         .apply();
                     service.applySettings();
                 }

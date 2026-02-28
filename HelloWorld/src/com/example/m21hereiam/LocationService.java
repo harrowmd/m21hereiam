@@ -26,10 +26,14 @@ import android.os.IBinder;
 import android.util.Base64;
 import android.util.Log;
 
+import android.media.MediaPlayer;
+
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
@@ -54,6 +58,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_NC_USER         = "nextcloud_user";
     static final String PREF_NC_PASS         = "nextcloud_pass";
     static final String PREF_SESSION         = "session";
+    static final String PREF_ALERT_CODE      = "alert_code";
 
     private static final String[] LOG_SUFFIXES = {
         "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
@@ -70,6 +75,7 @@ public class LocationService extends Service implements LocationListener {
     String nextcloudUser  = "";
     String nextcloudPass  = "";
     String session        = "mobyphone";
+    String alertCode      = "911911";
 
     // ── Current sensor values ─────────────────────────────────────────────────
     double csvLat        = 0;
@@ -213,14 +219,17 @@ public class LocationService extends Service implements LocationListener {
         nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.manytwo.one");
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
-        session        = p.getString(PREF_SESSION, "mobyphone");
+        session        = p.getString(PREF_SESSION,     "mobyphone");
+        alertCode      = p.getString(PREF_ALERT_CODE, "911911");
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
-            + "s session=" + session + " url=" + nextcloudUrl + " user=" + nextcloudUser);
+            + "s session=" + session + " alert=" + alertCode
+            + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 
     void applySettings() {
         writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
-            + "s session=" + session + " url=" + nextcloudUrl + " user=" + nextcloudUser);
+            + "s session=" + session + " alert=" + alertCode
+            + " url=" + nextcloudUrl + " user=" + nextcloudUser);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
         logHandler.removeCallbacks(logTick);
@@ -317,6 +326,7 @@ public class LocationService extends Service implements LocationListener {
         final String user  = nextcloudUser;
         final String pass  = nextcloudPass;
         final String sess  = session.isEmpty() ? "mobyphone" : session;
+        final String alert = alertCode;
         final File   dir   = docsDir();
         final String today = dateFmt.format(new Date());
 
@@ -350,6 +360,8 @@ public class LocationService extends Service implements LocationListener {
                         }
                     }
                     writeLog("Upload done: " + uploaded + " file(s) \u2192 " + sess);
+                    if (!alert.isEmpty())
+                        checkForAlert(alert, sessionDir, auth, dir);
                 } catch (Exception e) {
                     writeLog("Upload failed: " + e.getMessage());
                 }
@@ -405,6 +417,64 @@ public class LocationService extends Service implements LocationListener {
         int code = c.getResponseCode();
         c.disconnect();
         return code;
+    }
+
+    private void checkForAlert(String code, String sessionDir, String auth, File dir) {
+        try {
+            String fileName = code + ".mp3";
+            String alertUrl = sessionDir + enc(fileName);
+
+            // Check if alert file exists on Nextcloud
+            HttpURLConnection hc = (HttpURLConnection) new URL(alertUrl).openConnection();
+            hc.setRequestMethod("HEAD");
+            hc.setRequestProperty("Authorization", auth);
+            hc.setConnectTimeout(15000);
+            hc.setReadTimeout(15000);
+            int headCode = hc.getResponseCode();
+            hc.disconnect();
+            if (headCode != 200 && headCode != 204) {
+                writeLog("Alert check: " + fileName + " not found (HTTP " + headCode + ")");
+                return;
+            }
+            writeLog("Alert: " + fileName + " found, downloading");
+
+            // Download to Documents
+            File mp3 = new File(dir, fileName);
+            HttpURLConnection gc = (HttpURLConnection) new URL(alertUrl).openConnection();
+            gc.setRequestMethod("GET");
+            gc.setRequestProperty("Authorization", auth);
+            gc.setConnectTimeout(30000);
+            gc.setReadTimeout(60000);
+            InputStream is = gc.getInputStream();
+            FileOutputStream fos = new FileOutputStream(mp3);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+            is.close(); fos.close();
+            gc.disconnect();
+            writeLog("Alert: downloaded " + mp3.length() + " bytes, playing 4 times");
+
+            // Play 4 times with 5-second pauses between plays
+            for (int i = 0; i < 4; i++) {
+                try {
+                    MediaPlayer mp = new MediaPlayer();
+                    mp.setDataSource(mp3.getAbsolutePath());
+                    mp.prepare();
+                    mp.start();
+                    writeLog("Alert: playing (" + (i + 1) + "/4)");
+                    Thread.sleep(500); // let isPlaying() reflect true
+                    while (mp.isPlaying()) Thread.sleep(200);
+                    mp.release();
+                } catch (Exception e) {
+                    writeLog("Alert play error: " + e.getMessage());
+                    break;
+                }
+                if (i < 3) Thread.sleep(5000);
+            }
+            writeLog("Alert: playback complete");
+        } catch (Exception e) {
+            writeLog("Alert error: " + e.getMessage());
+        }
     }
 
     private String enc(String s) throws java.io.UnsupportedEncodingException {
