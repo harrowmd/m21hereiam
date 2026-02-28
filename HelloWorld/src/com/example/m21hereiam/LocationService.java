@@ -72,7 +72,7 @@ public class LocationService extends Service implements LocationListener {
     private static final String GPX_CLOSE =
         "    </trkseg>\n  </trk>\n</gpx>\n";
     private static final String KML_CLOSE =
-        "        </coordinates>\n      </LineString>\n    </Placemark>\n  </Document>\n</kml>\n";
+        "  </Document>\n</kml>\n";
 
     // ── Settings ──────────────────────────────────────────────────────────────
     long   updateInterval = 60_000;
@@ -684,12 +684,9 @@ public class LocationService extends Service implements LocationListener {
             if (!file.exists()) {
                 FileWriter fw = new FileWriter(file);
                 fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n  <Document>\n");
+                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
+                fw.write("  <Document>\n");
                 fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
-                fw.write("    <Style id=\"track\"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>\n");
-                fw.write("    <Placemark><name>Track</name><styleUrl>#track</styleUrl>\n");
-                fw.write("      <LineString><tessellate>1</tessellate><altitudeMode>absolute</altitudeMode>\n");
-                fw.write("        <coordinates>\n");
                 fw.close();
             } else {
                 RandomAccessFile raf = new RandomAccessFile(file, "rw");
@@ -697,7 +694,9 @@ public class LocationService extends Service implements LocationListener {
                 raf.close();
             }
             FileWriter fw = new FileWriter(file, true);
-            fw.write(String.format(Locale.US, "          %.6f,%.6f,%.1f\n", csvLon, csvLat, csvAlt));
+            fw.write(String.format(Locale.US,
+                "    <Placemark><name>%s</name><Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>\n",
+                tsFmt.format(now), csvLon, csvLat));
             fw.write(KML_CLOSE);
             fw.close();
         } catch (IOException e) {
