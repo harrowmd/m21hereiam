@@ -667,8 +667,8 @@ public class LocationService extends Service implements LocationListener {
             }
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US,
-                "      <trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele><time>%s</time><sat>%d</sat><hdop>%.1f</hdop></trkpt>\n",
-                csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites, csvAccuracy));
+                "      <trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele><time>%s</time><sat>%d</sat></trkpt>\n",
+                csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites));
             fw.write(GPX_CLOSE);
             fw.close();
         } catch (IOException e) {
