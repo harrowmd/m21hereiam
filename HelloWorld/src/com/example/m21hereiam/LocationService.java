@@ -100,6 +100,7 @@ public class LocationService extends Service implements LocationListener {
     // ── Internals ─────────────────────────────────────────────────────────────
     private final Handler logHandler    = new Handler();
     private final Handler uploadHandler = new Handler();
+    private boolean timersStarted = false;
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
 
@@ -173,10 +174,13 @@ public class LocationService extends Service implements LocationListener {
         } catch (Exception e) {
             Log.e(TAG, "startForeground failed: " + e.getMessage());
         }
-        writeLog("Service started (Android API " + Build.VERSION.SDK_INT + ")");
-        startLocationUpdates();
-        logHandler.post(logTick);
-        uploadHandler.postDelayed(uploadTick, uploadInterval);
+        if (!timersStarted) {
+            timersStarted = true;
+            writeLog("Service started (Android API " + Build.VERSION.SDK_INT + ")");
+            startLocationUpdates();
+            logHandler.post(logTick);
+            uploadHandler.postDelayed(uploadTick, uploadInterval);
+        }
         return START_STICKY;
     }
 
