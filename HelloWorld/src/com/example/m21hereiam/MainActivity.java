@@ -104,7 +104,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
     protected void onResume() {
         super.onResume();
         clockHandler.post(clockTick);
-        startAndBindService();
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED) {
+            startAndBindService();
+        }
     }
 
     @Override
@@ -274,7 +277,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED)
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        // WRITE_EXTERNAL_STORAGE is silently ignored on Android 11+ (API 30+)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED)
             needed.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
         if (!needed.isEmpty())

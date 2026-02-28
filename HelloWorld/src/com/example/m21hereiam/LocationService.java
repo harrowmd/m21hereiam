@@ -163,7 +163,11 @@ public class LocationService extends Service implements LocationListener {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
+        try {
+            startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
+        } catch (Exception e) {
+            Log.e(TAG, "startForeground failed: " + e.getMessage());
+        }
         writeLog("Service started");
         startLocationUpdates();
         logHandler.post(logTick);
