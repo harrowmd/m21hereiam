@@ -56,7 +56,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_SESSION         = "session";
 
     private static final String[] LOG_SUFFIXES = {
-        "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml"
+        "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
     };
     private static final String GPX_CLOSE =
         "    </trkseg>\n  </trk>\n</gpx>\n";
@@ -128,11 +128,16 @@ public class LocationService extends Service implements LocationListener {
         }
     };
 
+    private int lastLoggedBattery = -1;
     private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
             csvBattery = (scale > 0) ? (level * 100 / scale) : -1;
+            if (csvBattery != lastLoggedBattery) {
+                writeLog("Battery: " + csvBattery + "%");
+                lastLoggedBattery = csvBattery;
+            }
             if (uiListener != null) uiListener.onBatteryUpdate(csvBattery);
         }
     };
@@ -168,7 +173,7 @@ public class LocationService extends Service implements LocationListener {
         } catch (Exception e) {
             Log.e(TAG, "startForeground failed: " + e.getMessage());
         }
-        writeLog("Service started");
+        writeLog("Service started (Android API " + Build.VERSION.SDK_INT + ")");
         startLocationUpdates();
         logHandler.post(logTick);
         uploadHandler.postDelayed(uploadTick, uploadInterval);
@@ -177,6 +182,7 @@ public class LocationService extends Service implements LocationListener {
 
     @Override
     public void onDestroy() {
+        writeLog("Service stopped");
         super.onDestroy();
         logHandler.removeCallbacks(logTick);
         uploadHandler.removeCallbacks(uploadTick);
@@ -196,9 +202,13 @@ public class LocationService extends Service implements LocationListener {
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
         session        = p.getString(PREF_SESSION, "mobyphone");
+        writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
+            + "s session=" + session + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 
     void applySettings() {
+        writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
+            + "s session=" + session + " url=" + nextcloudUrl + " user=" + nextcloudUser);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
         logHandler.removeCallbacks(logTick);
@@ -212,17 +222,28 @@ public class LocationService extends Service implements LocationListener {
 
     void startLocationUpdates() {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) return;
+                != PackageManager.PERMISSION_GRANTED) {
+            writeLog("Location permission not granted — updates not started");
+            return;
+        }
         try {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER, updateInterval, 0, this);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
                 locationManager.registerGnssStatusCallback(gnssCallback);
+            writeLog("Requesting GPS updates every " + (updateInterval/1000) + "s");
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last == null)
                 last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-            if (last != null) onLocationChanged(last);
-        } catch (SecurityException ignored) {}
+            if (last != null) {
+                writeLog("Using last known location age=" + ((System.currentTimeMillis() - last.getTime())/1000) + "s");
+                onLocationChanged(last);
+            } else {
+                writeLog("No last known location available");
+            }
+        } catch (SecurityException e) {
+            writeLog("SecurityException starting location updates: " + e.getMessage());
+        }
     }
 
     @Override
@@ -231,14 +252,17 @@ public class LocationService extends Service implements LocationListener {
         csvLon      = loc.getLongitude();
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
+        writeLog(String.format(Locale.US,
+            "GPS fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
+            csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
         updateNotification(String.format(Locale.US, "%.5f, %.5f", csvLat, csvLon));
         if (uiListener != null)
             uiListener.onLocationUpdate(csvLat, csvLon, csvAlt, csvAccuracy);
     }
 
     @Override public void onStatusChanged(String p, int s, Bundle e) {}
-    @Override public void onProviderEnabled(String p) {}
-    @Override public void onProviderDisabled(String p) {}
+    @Override public void onProviderEnabled(String p)  { writeLog("Provider enabled: "  + p); }
+    @Override public void onProviderDisabled(String p) { writeLog("Provider disabled: " + p); }
 
     // ── Notification ──────────────────────────────────────────────────────────
 
@@ -284,6 +308,7 @@ public class LocationService extends Service implements LocationListener {
         final File   dir   = docsDir();
         final String today = dateFmt.format(new Date());
 
+        writeLog("Upload starting: url=" + url + " user=" + user + " session=" + sess);
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
@@ -300,16 +325,19 @@ public class LocationService extends Service implements LocationListener {
                     if (r1 >= 400 && r1 != 405) throw new IOException("hereiam/ MKCOL: " + r1);
                     if (r2 >= 400 && r2 != 405) throw new IOException(sess + "/ MKCOL: "  + r2);
 
-                    // Only upload today's 3 log files
+                    // Only upload today's 4 log files
                     int uploaded = 0;
                     for (String suffix : LOG_SUFFIXES) {
                         File f = new File(dir, today + suffix);
                         if (f.exists()) {
-                            putFile(f, sessionDir + enc(f.getName()), auth);
-                            uploaded++;
+                            int code = putFile(f, sessionDir + enc(f.getName()), auth);
+                            writeLog("PUT " + f.getName() + " (" + f.length() + " bytes) \u2192 HTTP " + code);
+                            if (code < 400) uploaded++;
+                        } else {
+                            writeLog("Skip (not found): " + today + suffix);
                         }
                     }
-                    writeLog("Uploaded " + uploaded + " file(s) \u2192 " + sess);
+                    writeLog("Upload done: " + uploaded + " file(s) \u2192 " + sess);
                 } catch (Exception e) {
                     writeLog("Upload failed: " + e.getMessage());
                 }
@@ -348,7 +376,7 @@ public class LocationService extends Service implements LocationListener {
         return code;
     }
 
-    private void putFile(File file, String url, String auth) throws IOException {
+    private int putFile(File file, String url, String auth) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setRequestMethod("PUT");
         c.setRequestProperty("Authorization", auth);
@@ -362,8 +390,9 @@ public class LocationService extends Service implements LocationListener {
         int n;
         while ((n = fis.read(buf)) != -1) os.write(buf, 0, n);
         fis.close(); os.close();
-        c.getResponseCode();
+        int code = c.getResponseCode();
         c.disconnect();
+        return code;
     }
 
     private String enc(String s) throws java.io.UnsupportedEncodingException {
@@ -385,7 +414,10 @@ public class LocationService extends Service implements LocationListener {
                 tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
                 csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
             fw.close();
-        } catch (IOException ignored) {}
+            writeLog("Saved CSV: " + file.getName() + " (" + file.length() + " bytes)");
+        } catch (IOException e) {
+            writeLog("CSV write error: " + e.getMessage());
+        }
         deleteOldFiles(dir, "-hereiamnow.csv");
     }
 
@@ -414,7 +446,9 @@ public class LocationService extends Service implements LocationListener {
                 csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites, csvAccuracy));
             fw.write(GPX_CLOSE);
             fw.close();
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            writeLog("GPX write error: " + e.getMessage());
+        }
         deleteOldFiles(dir, "-hereiamnow.gpx");
     }
 
@@ -442,7 +476,9 @@ public class LocationService extends Service implements LocationListener {
             fw.write(String.format(Locale.US, "          %.6f,%.6f,%.1f\n", csvLon, csvLat, csvAlt));
             fw.write(KML_CLOSE);
             fw.close();
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            writeLog("KML write error: " + e.getMessage());
+        }
         deleteOldFiles(dir, "-hereiamnow.kml");
     }
 
@@ -452,7 +488,7 @@ public class LocationService extends Service implements LocationListener {
         Log.d(TAG, message);
         File dir = docsDir();
         Date now = new Date();
-        File logFile = new File(dir, dateFmt.format(now) + "-hereiamnow.log");
+        File logFile = new File(dir, dateFmt.format(now) + "-hereiamnow.txt");
         try {
             FileWriter fw = new FileWriter(logFile, true);
             fw.write(tsFmt.format(now) + " " + message + "\n");
