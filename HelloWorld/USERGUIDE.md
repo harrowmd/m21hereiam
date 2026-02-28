@@ -1,0 +1,289 @@
+# Here I Am Now — User Guide
+
+**Here I Am Now** is an Android GPS tracking app that records your location,
+saves it to log files on the phone, and uploads them automatically to a
+Nextcloud or OwnCloud server. It runs continuously in the background and can
+alert you remotely by playing a sound on the phone.
+
+The app requires no Google Play Services and works on any Android phone
+running Android 5.0 (API 21) or later, including de-Googled and custom ROM
+devices.
+
+---
+
+## Contents
+
+1. [Installation](#1-installation)
+2. [Main Screen](#2-main-screen)
+3. [Data Overlay](#3-data-overlay)
+4. [Map Controls](#4-map-controls)
+5. [Settings](#5-settings)
+6. [Log Files](#6-log-files)
+7. [Nextcloud Upload](#7-nextcloud-upload)
+8. [Remote Alert System](#8-remote-alert-system)
+9. [Background Operation](#9-background-operation)
+10. [Start on Bootup](#10-start-on-bootup)
+
+---
+
+## 1. Installation
+
+Install the APK file directly on the phone (sideload). You do not need the
+Google Play Store.
+
+1. On the phone go to **Settings → Security** and enable **Install unknown
+   apps** (or **Unknown sources**) for your browser or file manager.
+2. Download or copy `m21hereiamnow.apk` to the phone.
+3. Open the APK file and tap **Install**.
+4. When the app first opens, grant the **Location** permission when prompted.
+
+> On Android 11 and later the app uses the standard `Documents` folder
+> without needing storage permission.
+
+---
+
+## 2. Main Screen
+
+![Main screen](screen_main.png)
+
+The full screen shows an **OpenStreetMap** map centred on your current
+location. Two buttons are visible:
+
+| Button | Position | Function |
+|--------|----------|----------|
+| ⚙ (grey) | Top-right | Opens the Settings dialog |
+| ⊕ (blue) | Bottom-right | Re-centres the map on your current position |
+
+Your **current location** is shown as a solid blue dot in the centre of the
+map. A trail of smaller blue dots shows every recorded position from the
+**last 24 hours**.
+
+The notification bar at the top of the phone will show a persistent
+**"Here I Am Now"** notification while the app is running, displaying your
+current coordinates. This keeps the background service alive.
+
+---
+
+## 3. Data Overlay
+
+A semi-transparent bar at the bottom of the screen shows live sensor data,
+updated every second:
+
+| Left column | Right column |
+|-------------|--------------|
+| Date | Latitude |
+| Time | Longitude |
+| Battery % | Altitude (m) |
+| Satellites in fix | Accuracy (m) |
+
+---
+
+## 4. Map Controls
+
+| Gesture | Action |
+|---------|--------|
+| **Pinch in / out** | Zoom (levels 1–19) |
+| **Single-finger drag** | Pan the map |
+| **Tap ⊕ button** | Snap map back to current GPS position |
+
+The blue location dot moves independently of the map centre — if you pan
+away to look at another area, the dot continues to show your real position.
+Tap ⊕ to return the view to your location.
+
+Map tiles are fetched from **OpenStreetMap** over the internet and cached
+while the app is running.
+
+---
+
+## 5. Settings
+
+Tap the ⚙ button to open the Settings dialog. Scroll down to see all
+options. Tap **Save** to apply changes immediately; tap **Cancel** to
+discard.
+
+![Settings — top](screen_settings.png)
+![Settings — bottom](screen_settings2.png)
+
+### Session name
+A label used as the subfolder name when uploading to Nextcloud.
+Default: `mobyphone`
+
+Use a different name for each phone so their files are stored separately on
+the server, e.g. `phone1`, `alice`, `car`.
+
+### Update interval (seconds)
+How often the app records a GPS fix and writes a row to the log files.
+Default: `60` seconds. Minimum: `10` seconds.
+
+### Upload interval (seconds)
+How often the app uploads the log files to Nextcloud.
+Default: `300` seconds (5 minutes). Minimum: `10` seconds.
+
+### Nextcloud / OwnCloud URL
+The base URL of your Nextcloud or OwnCloud server.
+Example: `https://cloud.example.com`
+
+### Username / Password
+Your Nextcloud login credentials. Tap **Show** to reveal the password.
+
+### Alert code
+A numeric or text code used for the remote alert feature (see
+[Section 8](#8-remote-alert-system)).
+Default: `911911`
+
+### Start on bootup
+When ticked (default), the app starts automatically when the phone is
+switched on. No manual launch is needed.
+
+---
+
+## 6. Log Files
+
+The app writes three log files per day, plus one debug log, all stored in
+the phone's **Documents** folder (`Internal Storage / Documents`):
+
+| File | Format | Contents |
+|------|--------|----------|
+| `YYYY-MM-DD-hereiamnow.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery |
+| `YYYY-MM-DD-hereiamnow.gpx` | GPX 1.1 | GPS track, suitable for mapping software |
+| `YYYY-MM-DD-hereiamnow.kml` | KML 2.2 | GPS track, suitable for Google Earth |
+| `YYYY-MM-DD-hereiamnow.txt` | Plain text | Debug and status log |
+
+Files roll over at midnight. Files older than **30 days** are deleted
+automatically.
+
+### CSV format
+
+```
+timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct
+2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,0,100
+```
+
+---
+
+## 7. Nextcloud Upload
+
+The app uploads today's four log files (`.csv`, `.gpx`, `.kml`, `.txt`) to
+your Nextcloud server at every **upload interval**.
+
+Files are stored at:
+```
+{Nextcloud URL}/remote.php/dav/files/{username}/hereiam/{session}/
+```
+
+For example, with session name `alice`:
+```
+https://cloud.example.com/remote.php/dav/files/myuser/hereiam/alice/
+```
+
+The `hereiam/` and session folders are created automatically if they do not
+exist. Previous days' files are not re-uploaded.
+
+Upload results are written to the `.txt` debug log, for example:
+
+```
+Upload starting: url=https://cloud.example.com user=myuser session=alice
+MKCOL hereiam/: 405
+MKCOL alice/: 405
+PUT 2026-02-28-hereiamnow.csv (22497 bytes) → HTTP 204
+PUT 2026-02-28-hereiamnow.gpx (39239 bytes) → HTTP 204
+PUT 2026-02-28-hereiamnow.kml (10726 bytes) → HTTP 204
+PUT 2026-02-28-hereiamnow.txt (60191 bytes) → HTTP 204
+Upload done: 4 file(s) → alice
+```
+
+> HTTP 405 on MKCOL means the folder already exists — this is normal.
+> HTTP 204 on PUT means the file was uploaded successfully.
+
+---
+
+## 8. Remote Alert System
+
+You can trigger an audio/vibration/light alert on the phone remotely by
+uploading an MP3 file to Nextcloud.
+
+### How it works
+
+1. Upload a file named `{alert code}.mp3` (e.g. `911911.mp3`) into the
+   session folder on Nextcloud:
+   ```
+   hereiam/{session}/911911.mp3
+   ```
+2. At the next upload interval the phone detects the file, downloads it,
+   and plays it **4 times** with 5-second pauses between plays.
+3. While each play is active:
+   - The MP3 plays at **maximum alarm volume**, bypassing Do Not Disturb.
+   - The **camera LED torch flashes** on and off.
+   - The **phone vibrates** in sync with the flash.
+4. A red **Cancel Alert** button appears at the top of the screen.
+5. The alert repeats every upload cycle until **Cancel Alert** is tapped.
+
+### Cancelling the alert
+
+Tap **Cancel Alert** on the screen. This:
+- Stops playback immediately.
+- Turns off the torch and vibration.
+- **Deletes** `911911.mp3` from Nextcloud so the alert does not repeat.
+
+The debug log records each step:
+
+```
+Alert: 911911.mp3 found, downloading
+Alert: downloaded 9030 bytes
+Alert: playing 4 times
+Alert: playing (1/4)
+Alert: playing (2/4)
+Alert: playing (3/4)
+Alert: playing (4/4)
+Alert: playback complete
+Alert: cancelled by user
+Alert: 911911.mp3 deleted from Nextcloud (HTTP 204)
+```
+
+---
+
+## 9. Background Operation
+
+The app runs as an Android **foreground service**. This means:
+
+- It continues recording GPS and uploading files even when the screen is
+  off or another app is in use.
+- A persistent notification is shown in the notification bar. This is
+  required by Android to keep background services running reliably.
+- If the service is killed by the system (e.g. low memory), Android
+  restarts it automatically (`START_STICKY`).
+
+You can safely leave the app running continuously for days or weeks.
+
+---
+
+## 10. Start on Bootup
+
+With **Start on bootup** ticked (default), the app starts automatically
+when the phone is switched on or restarted. No manual launch is needed.
+
+To disable this, open Settings, untick **Start on bootup**, and tap Save.
+
+---
+
+## Compatibility
+
+- **Android version**: 5.0 (API 21) and later
+- **Google Play Services**: not required
+- **De-Googled / custom ROM**: fully compatible
+- **Map tiles**: OpenStreetMap (internet connection required for tile loading)
+- **Nextcloud / OwnCloud**: any self-hosted instance accessible over HTTPS
+
+---
+
+## Build information
+
+The app version and build date are shown at the bottom of the Settings
+dialog, for example:
+
+```
+Here I Am Now  v1.0 (1)
+Built: 2026-02-28 14:35
+```
+
+Source code: https://github.com/harrowmd/m21hereiam
