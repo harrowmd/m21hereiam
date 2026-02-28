@@ -176,7 +176,15 @@ public class LocationService extends Service implements LocationListener {
         }
         if (!timersStarted) {
             timersStarted = true;
-            writeLog("Service started (Android API " + Build.VERSION.SDK_INT + ")");
+            String buildInfo = "";
+            try {
+                android.content.pm.PackageInfo pi =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+                buildInfo = " v" + pi.versionName + " (" + pi.versionCode
+                    + ") built " + getString(R.string.build_date);
+            } catch (Exception ignored) {}
+            writeLog("Service started: " + getString(R.string.app_name) + buildInfo
+                + " | Android API " + Build.VERSION.SDK_INT);
             startLocationUpdates();
             logHandler.post(logTick);
             uploadHandler.postDelayed(uploadTick, uploadInterval);

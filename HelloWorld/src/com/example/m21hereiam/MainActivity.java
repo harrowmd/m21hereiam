@@ -7,6 +7,7 @@ import android.content.ComponentName;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -216,6 +217,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         layout.addView(passRow);
 
+        TextView tvBuildInfo = new TextView(this);
+        tvBuildInfo.setText(getBuildInfo());
+        tvBuildInfo.setTextSize(11);
+        tvBuildInfo.setPadding(0, dp8 * 3, 0, dp4);
+        layout.addView(tvBuildInfo);
+
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
 
@@ -252,6 +259,17 @@ public class MainActivity extends Activity implements LocationService.Listener {
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    private String getBuildInfo() {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return getString(R.string.app_name)
+                + "  v" + pi.versionName + " (" + pi.versionCode + ")"
+                + "\nBuilt: " + getString(R.string.build_date);
+        } catch (PackageManager.NameNotFoundException e) {
+            return getString(R.string.app_name);
+        }
     }
 
     private TextView label(String text) {

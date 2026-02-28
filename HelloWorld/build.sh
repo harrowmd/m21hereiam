@@ -6,8 +6,20 @@ PLATFORM=/home/martin/Android/Sdk/platforms/android-36/android.jar
 
 mkdir -p compiled_res gen obj dex
 
+# Generate build info resource
+BUILD_DATE=$(date '+%Y-%m-%d %H:%M')
+BUILD_CODE=$(date '+%Y%m%d%H%M')
+cat > res/values/build_info.xml << BUILDEOF
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="build_date">$BUILD_DATE</string>
+    <string name="build_code">$BUILD_CODE</string>
+</resources>
+BUILDEOF
+
 $BUILD_TOOLS/aapt2 compile res/layout/activity_main.xml -o compiled_res/
 $BUILD_TOOLS/aapt2 compile res/values/strings.xml -o compiled_res/
+$BUILD_TOOLS/aapt2 compile res/values/build_info.xml -o compiled_res/
 $BUILD_TOOLS/aapt2 compile res/mipmap-mdpi/ic_launcher.png -o compiled_res/
 $BUILD_TOOLS/aapt2 compile res/mipmap-hdpi/ic_launcher.png -o compiled_res/
 $BUILD_TOOLS/aapt2 compile res/mipmap-xhdpi/ic_launcher.png -o compiled_res/
