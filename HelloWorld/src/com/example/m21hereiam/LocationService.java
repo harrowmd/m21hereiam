@@ -26,6 +26,7 @@ import android.os.IBinder;
 import android.util.Base64;
 import android.util.Log;
 
+import android.hardware.camera2.CameraManager;
 import android.media.MediaPlayer;
 
 import java.io.File;
@@ -90,6 +91,8 @@ public class LocationService extends Service implements LocationListener {
         void onLocationUpdate(double lat, double lon, double alt, float accuracy);
         void onSatellitesUpdate(int count);
         void onBatteryUpdate(int pct);
+        void onAlertStarted();
+        void onAlertStopped();
     }
 
     private Listener uiListener;
@@ -109,6 +112,13 @@ public class LocationService extends Service implements LocationListener {
     private boolean timersStarted = false;
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
+
+    // ── Alert state ───────────────────────────────────────────────────────────
+    volatile boolean     alertActive    = false;
+    volatile boolean     alertCancelled = false;
+    volatile MediaPlayer activePlayer   = null;
+    volatile String      activeAlertUrl  = null;
+    volatile String      activeAlertAuth = null;
 
     final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd",          Locale.getDefault());
     final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss",            Locale.getDefault());
@@ -452,28 +462,101 @@ public class LocationService extends Service implements LocationListener {
             while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
             is.close(); fos.close();
             gc.disconnect();
-            writeLog("Alert: downloaded " + mp3.length() + " bytes, playing 4 times");
+            writeLog("Alert: downloaded " + mp3.length() + " bytes");
 
-            // Play 4 times with 5-second pauses between plays
-            for (int i = 0; i < 4; i++) {
+            // Store URL/auth so cancelAlert() can delete from Nextcloud
+            activeAlertUrl  = alertUrl;
+            activeAlertAuth = auth;
+            alertCancelled  = false;
+            alertActive     = true;
+            if (uiListener != null) uiListener.onAlertStarted();
+
+            // Play 4 times with LED flashing; stop early if cancelled
+            writeLog("Alert: playing 4 times");
+            for (int i = 0; i < 4 && !alertCancelled; i++) {
                 try {
-                    MediaPlayer mp = new MediaPlayer();
-                    mp.setDataSource(mp3.getAbsolutePath());
-                    mp.prepare();
-                    mp.start();
+                    activePlayer = new MediaPlayer();
+                    activePlayer.setDataSource(mp3.getAbsolutePath());
+                    activePlayer.prepare();
+                    torchOn();
+                    activePlayer.start();
                     writeLog("Alert: playing (" + (i + 1) + "/4)");
-                    Thread.sleep(500); // let isPlaying() reflect true
-                    while (mp.isPlaying()) Thread.sleep(200);
-                    mp.release();
+                    Thread.sleep(500);
+                    while (activePlayer != null && activePlayer.isPlaying() && !alertCancelled)
+                        Thread.sleep(200);
+                    torchOff();
+                    if (activePlayer != null) { activePlayer.release(); activePlayer = null; }
                 } catch (Exception e) {
+                    torchOff();
                     writeLog("Alert play error: " + e.getMessage());
                     break;
                 }
-                if (i < 3) Thread.sleep(5000);
+                if (i < 3 && !alertCancelled) Thread.sleep(5000);
             }
-            writeLog("Alert: playback complete");
+            torchOff();
+            writeLog("Alert: playback complete" + (alertCancelled ? " (cancelled)" : ""));
+            // Keep alertActive=true and button visible until user presses Cancel
         } catch (Exception e) {
             writeLog("Alert error: " + e.getMessage());
+            torchOff();
+        }
+    }
+
+    void cancelAlert() {
+        writeLog("Alert: cancelled by user");
+        alertCancelled = true;
+        alertActive    = false;
+        MediaPlayer mp = activePlayer;
+        if (mp != null) {
+            try { mp.stop(); mp.release(); } catch (Exception ignored) {}
+            activePlayer = null;
+        }
+        torchOff();
+        final String url  = activeAlertUrl;
+        final String auth = activeAlertAuth;
+        activeAlertUrl  = null;
+        activeAlertAuth = null;
+        if (url != null && auth != null)
+            deleteFromNextcloud(url, auth);
+        if (uiListener != null) uiListener.onAlertStopped();
+    }
+
+    private void deleteFromNextcloud(final String url, final String auth) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                    c.setRequestMethod("DELETE");
+                    c.setRequestProperty("Authorization", auth);
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(15000);
+                    int code = c.getResponseCode();
+                    c.disconnect();
+                    writeLog("Alert: DELETE → HTTP " + code);
+                } catch (Exception e) {
+                    writeLog("Alert: DELETE failed: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    private void torchOn() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+                String[] ids = cm.getCameraIdList();
+                if (ids.length > 0) cm.setTorchMode(ids[0], true);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void torchOff() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+                String[] ids = cm.getCameraIdList();
+                if (ids.length > 0) cm.setTorchMode(ids[0], false);
+            } catch (Exception ignored) {}
         }
     }
 

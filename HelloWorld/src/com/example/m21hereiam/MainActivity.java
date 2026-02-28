@@ -37,6 +37,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
+    private Button   btnCancelAlert;
 
     // ── Service binding ───────────────────────────────────────────────────────
     private LocationService service;
@@ -52,6 +53,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onSatellitesUpdate(service.csvSatellites);
             onBatteryUpdate(service.csvBattery);
             loadTrackPoints();
+            // Restore Cancel Alert button if alert was already active
+            if (service.alertActive)
+                btnCancelAlert.setVisibility(View.VISIBLE);
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             bound   = false;
@@ -96,6 +100,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
         });
         ((Button) findViewById(R.id.btn_settings)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showSettingsDialog(); }
+        });
+
+        btnCancelAlert = (Button) findViewById(R.id.btn_cancel_alert);
+        btnCancelAlert.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (bound) service.cancelAlert();
+            }
         });
 
         requestNeededPermissions();
@@ -149,6 +160,20 @@ public class MainActivity extends Activity implements LocationService.Listener {
     public void onBatteryUpdate(final int pct) {
         runOnUiThread(new Runnable() {
             @Override public void run() { tvBattery.setText("Battery: " + pct + "%"); }
+        });
+    }
+
+    @Override
+    public void onAlertStarted() {
+        runOnUiThread(new Runnable() {
+            @Override public void run() { btnCancelAlert.setVisibility(View.VISIBLE); }
+        });
+    }
+
+    @Override
+    public void onAlertStopped() {
+        runOnUiThread(new Runnable() {
+            @Override public void run() { btnCancelAlert.setVisibility(View.GONE); }
         });
     }
 

@@ -9,6 +9,20 @@
         android:layout_height="match_parent" />
 
     <Button
+        android:id="@+id/btn_cancel_alert"
+        android:layout_width="wrap_content"
+        android:layout_height="56dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="16dp"
+        android:background="#CCDD0000"
+        android:text="Cancel Alert"
+        android:textColor="#FFFFFF"
+        android:textSize="18sp"
+        android:paddingLeft="24dp"
+        android:paddingRight="24dp"
+        android:visibility="gone" />
+
+    <Button
         android:id="@+id/btn_settings"
         android:layout_width="56dp"
         android:layout_height="56dp"
