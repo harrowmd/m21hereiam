@@ -517,11 +517,11 @@ public class LocationService extends Service implements LocationListener {
         activeAlertUrl  = null;
         activeAlertAuth = null;
         if (url != null && auth != null)
-            deleteFromNextcloud(url, auth);
+            deleteFromNextcloud(url, auth, alertCode + ".mp3");
         if (uiListener != null) uiListener.onAlertStopped();
     }
 
-    private void deleteFromNextcloud(final String url, final String auth) {
+    private void deleteFromNextcloud(final String url, final String auth, final String fileName) {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
@@ -532,9 +532,12 @@ public class LocationService extends Service implements LocationListener {
                     c.setReadTimeout(15000);
                     int code = c.getResponseCode();
                     c.disconnect();
-                    writeLog("Alert: DELETE → HTTP " + code);
+                    if (code < 300)
+                        writeLog("Alert: " + fileName + " deleted from Nextcloud (HTTP " + code + ")");
+                    else
+                        writeLog("Alert: DELETE " + fileName + " failed (HTTP " + code + ")");
                 } catch (Exception e) {
-                    writeLog("Alert: DELETE failed: " + e.getMessage());
+                    writeLog("Alert: DELETE " + fileName + " failed: " + e.getMessage());
                 }
             }
         }).start();
