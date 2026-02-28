@@ -71,8 +71,10 @@ public class LocationService extends Service implements LocationListener {
     };
     private static final String GPX_CLOSE =
         "    </trkseg>\n  </trk>\n</gpx>\n";
-    private static final String KML_CLOSE =
-        "  </Document>\n</kml>\n";
+    // KML in-memory track (reloaded from CSV on service restart)
+    private final java.util.List<String>   kmlTimestamps  = new java.util.ArrayList<>();
+    private final java.util.List<double[]> kmlLatLon      = new java.util.ArrayList<>();
+    private String kmlCurrentDate = "";
 
     // ── Settings ──────────────────────────────────────────────────────────────
     long   updateInterval = 60_000;
@@ -677,32 +679,82 @@ public class LocationService extends Service implements LocationListener {
 
     private void saveToKml() {
         if (!hasLocation) return;
-        File dir  = docsDir();
-        Date now  = new Date();
-        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.kml");
+        File   dir   = docsDir();
+        Date   now   = new Date();
+        String today = dateFmt.format(now);
+        File   file  = new File(dir, today + "-hereiamnow.kml");
+
+        // Clear list on date rollover
+        if (!today.equals(kmlCurrentDate)) {
+            kmlTimestamps.clear();
+            kmlLatLon.clear();
+            kmlCurrentDate = today;
+        }
+        // Reload from CSV if list is empty (service restart)
+        if (kmlTimestamps.isEmpty() && file.exists()) {
+            loadKmlFromCsv(dir, today);
+        }
+
+        kmlTimestamps.add(tsFmt.format(now));
+        kmlLatLon.add(new double[]{csvLat, csvLon});
+
         try {
-            if (!file.exists()) {
-                FileWriter fw = new FileWriter(file);
-                fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
-                fw.write("  <Document>\n");
-                fw.write("    <name>" + dateFmt.format(now) + "</name>\n");
-                fw.close();
-            } else {
-                RandomAccessFile raf = new RandomAccessFile(file, "rw");
-                raf.setLength(raf.length() - KML_CLOSE.getBytes("UTF-8").length);
-                raf.close();
+            FileWriter fw = new FileWriter(file, false); // overwrite each time
+            fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+            fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
+            fw.write("  <Document>\n");
+            fw.write("    <name>" + today + "</name>\n");
+            fw.write("    <Style id=\"track\"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>\n");
+            // Individual Point placemarks (POIs)
+            for (int i = 0; i < kmlTimestamps.size(); i++) {
+                double[] ll = kmlLatLon.get(i);
+                fw.write(String.format(Locale.US,
+                    "    <Placemark><name>%s</name><Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>\n",
+                    kmlTimestamps.get(i), ll[1], ll[0]));
             }
-            FileWriter fw = new FileWriter(file, true);
-            fw.write(String.format(Locale.US,
-                "    <Placemark><name>%s</name><Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>\n",
-                tsFmt.format(now), csvLon, csvLat));
-            fw.write(KML_CLOSE);
+            // LineString track (only if 2+ points)
+            if (kmlLatLon.size() >= 2) {
+                fw.write("    <Placemark><name>Track</name><styleUrl>#track</styleUrl>\n");
+                fw.write("      <LineString><tessellate>1</tessellate>\n");
+                fw.write("        <coordinates>\n");
+                for (double[] ll : kmlLatLon) {
+                    fw.write(String.format(Locale.US, "          %.6f,%.6f,0\n", ll[1], ll[0]));
+                }
+                fw.write("        </coordinates>\n");
+                fw.write("      </LineString>\n");
+                fw.write("    </Placemark>\n");
+            }
+            fw.write("  </Document>\n</kml>\n");
             fw.close();
         } catch (IOException e) {
             writeLog("KML write error: " + e.getMessage());
         }
         deleteOldFiles(dir, "-hereiamnow.kml");
+    }
+
+    private void loadKmlFromCsv(File dir, String today) {
+        File csv = new File(dir, today + "-hereiamnow.csv");
+        if (!csv.exists()) return;
+        try {
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(csv));
+            String line;
+            boolean header = true;
+            while ((line = br.readLine()) != null) {
+                if (header) { header = false; continue; }
+                String[] cols = line.split(",");
+                if (cols.length < 5) continue;
+                try {
+                    double lat = Double.parseDouble(cols[3]);
+                    double lon = Double.parseDouble(cols[4]);
+                    kmlTimestamps.add(cols[0]);
+                    kmlLatLon.add(new double[]{lat, lon});
+                } catch (NumberFormatException ignored) {}
+            }
+            br.close();
+            writeLog("KML: reloaded " + kmlTimestamps.size() + " points from CSV");
+        } catch (IOException e) {
+            writeLog("KML reload error: " + e.getMessage());
+        }
     }
 
     // ── File helpers ──────────────────────────────────────────────────────────
