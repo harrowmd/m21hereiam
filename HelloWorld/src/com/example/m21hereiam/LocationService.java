@@ -30,6 +30,8 @@ import android.hardware.camera2.CameraManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -487,11 +489,14 @@ public class LocationService extends Service implements LocationListener {
 
     // Play loop extracted so volume is always restored
     private void playAlertAudio(File mp3) throws Exception {
-        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        AudioManager am  = (AudioManager) getSystemService(AUDIO_SERVICE);
+        Vibrator      vib = (Vibrator)     getSystemService(VIBRATOR_SERVICE);
         int origVol = am.getStreamVolume(AudioManager.STREAM_ALARM);
         int maxVol  = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
         am.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0);
         writeLog("Alert: alarm volume set to max (" + maxVol + "), was " + origVol);
+        // Vibration pattern: 400ms on, 200ms off, repeating (in sync with torch)
+        long[] vibePattern = {0, 400, 200};
         try {
             for (int i = 0; i < 4 && !alertCancelled; i++) {
                 try {
@@ -503,24 +508,41 @@ public class LocationService extends Service implements LocationListener {
                     activePlayer.setDataSource(mp3.getAbsolutePath());
                     activePlayer.prepare();
                     torchOn();
+                    vibrateStart(vib, vibePattern);
                     activePlayer.start();
                     writeLog("Alert: playing (" + (i + 1) + "/4)");
                     Thread.sleep(500);
                     while (activePlayer != null && activePlayer.isPlaying() && !alertCancelled)
                         Thread.sleep(200);
                     torchOff();
+                    vib.cancel();
                     if (activePlayer != null) { activePlayer.release(); activePlayer = null; }
                 } catch (Exception e) {
                     torchOff();
+                    vib.cancel();
                     writeLog("Alert play error: " + e.getMessage());
                     break;
                 }
                 if (i < 3 && !alertCancelled) Thread.sleep(5000);
             }
         } finally {
+            vib.cancel();
             am.setStreamVolume(AudioManager.STREAM_ALARM, origVol, 0);
             writeLog("Alert: alarm volume restored to " + origVol);
         }
+    }
+
+    private void vibrateStart(Vibrator vib, long[] pattern) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createWaveform(pattern, 0),
+                    new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .build());
+            } else {
+                vib.vibrate(pattern, 0);
+            }
+        } catch (Exception ignored) {}
     }
 
     void cancelAlert() {
@@ -533,6 +555,7 @@ public class LocationService extends Service implements LocationListener {
             activePlayer = null;
         }
         torchOff();
+        try { ((Vibrator) getSystemService(VIBRATOR_SERVICE)).cancel(); } catch (Exception ignored) {}
         final String url  = activeAlertUrl;
         final String auth = activeAlertAuth;
         activeAlertUrl  = null;
