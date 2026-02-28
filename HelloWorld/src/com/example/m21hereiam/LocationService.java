@@ -84,7 +84,6 @@ public class LocationService extends Service implements LocationListener {
         void onLocationUpdate(double lat, double lon, double alt, float accuracy);
         void onSatellitesUpdate(int count);
         void onBatteryUpdate(int pct);
-        void onUploadResult(String message);
     }
 
     private Listener uiListener;
@@ -165,6 +164,7 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
+        writeLog("Service started");
         startLocationUpdates();
         logHandler.post(logTick);
         uploadHandler.postDelayed(uploadTick, uploadInterval);
@@ -273,15 +273,15 @@ public class LocationService extends Service implements LocationListener {
 
     void uploadFiles() {
         if (nextcloudUrl.isEmpty() || nextcloudUser.isEmpty()) return;
-        final String url  = nextcloudUrl.replaceAll("/+$", "");
-        final String user = nextcloudUser;
-        final String pass = nextcloudPass;
-        final String sess = session.isEmpty() ? "mobyphone" : session;
-        final File   dir  = docsDir();
+        final String url   = nextcloudUrl.replaceAll("/+$", "");
+        final String user  = nextcloudUser;
+        final String pass  = nextcloudPass;
+        final String sess  = session.isEmpty() ? "mobyphone" : session;
+        final File   dir   = docsDir();
+        final String today = dateFmt.format(new Date());
 
         new Thread(new Runnable() {
             @Override public void run() {
-                final String result;
                 try {
                     String auth = "Basic " + Base64.encodeToString(
                         (user + ":" + pass).getBytes("UTF-8"), Base64.NO_WRAP);
@@ -290,33 +290,25 @@ public class LocationService extends Service implements LocationListener {
                     String sessionDir = hereibDir + enc(sess) + "/";
 
                     int r1 = mkCol(hereibDir,  auth);
-                    Log.d(TAG, "MKCOL hereiam/: " + r1);
+                    writeLog("MKCOL hereiam/: " + r1);
                     int r2 = mkCol(sessionDir, auth);
-                    Log.d(TAG, "MKCOL " + sess + "/: " + r2);
+                    writeLog("MKCOL " + sess + "/: " + r2);
                     if (r1 >= 400 && r1 != 405) throw new IOException("hereiam/ MKCOL: " + r1);
                     if (r2 >= 400 && r2 != 405) throw new IOException(sess + "/ MKCOL: "  + r2);
 
+                    // Only upload today's 3 log files
                     int uploaded = 0;
-                    File[] files = dir.listFiles();
-                    if (files != null) {
-                        for (File f : files) {
-                            for (String suffix : LOG_SUFFIXES) {
-                                if (f.getName().endsWith(suffix)) {
-                                    putFile(f, sessionDir + enc(f.getName()), auth);
-                                    uploaded++;
-                                    break;
-                                }
-                            }
+                    for (String suffix : LOG_SUFFIXES) {
+                        File f = new File(dir, today + suffix);
+                        if (f.exists()) {
+                            putFile(f, sessionDir + enc(f.getName()), auth);
+                            uploaded++;
                         }
                     }
-                    result = "Uploaded " + uploaded + " file(s) \u2192 " + sess;
+                    writeLog("Uploaded " + uploaded + " file(s) \u2192 " + sess);
                 } catch (Exception e) {
-                    Log.e(TAG, "Upload failed", e);
-                    if (uiListener != null)
-                        uiListener.onUploadResult("Upload failed: " + e.getMessage());
-                    return;
+                    writeLog("Upload failed: " + e.getMessage());
                 }
-                if (uiListener != null) uiListener.onUploadResult(result);
             }
         }).start();
     }
@@ -451,6 +443,18 @@ public class LocationService extends Service implements LocationListener {
     }
 
     // ── File helpers ──────────────────────────────────────────────────────────
+
+    void writeLog(String message) {
+        Log.d(TAG, message);
+        File dir = docsDir();
+        Date now = new Date();
+        File logFile = new File(dir, dateFmt.format(now) + "-hereiamnow.log");
+        try {
+            FileWriter fw = new FileWriter(logFile, true);
+            fw.write(tsFmt.format(now) + " " + message + "\n");
+            fw.close();
+        } catch (IOException ignored) {}
+    }
 
     File docsDir() {
         File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);

@@ -19,8 +19,6 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -147,15 +145,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
     public void onBatteryUpdate(final int pct) {
         runOnUiThread(new Runnable() {
             @Override public void run() { tvBattery.setText("Battery: " + pct + "%"); }
-        });
-    }
-
-    @Override
-    public void onUploadResult(final String message) {
-        runOnUiThread(new Runnable() {
-            @Override public void run() {
-                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
-            }
         });
     }
 
