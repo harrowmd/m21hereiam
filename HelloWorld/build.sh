@@ -31,6 +31,7 @@ javac -source 8 -target 8 -classpath $PLATFORM -d obj \
   gen/com/example/m21hereiam/R.java \
   src/com/example/m21hereiam/MapView.java \
   src/com/example/m21hereiam/LocationService.java \
+  src/com/example/m21hereiam/BootReceiver.java \
   src/com/example/m21hereiam/MainActivity.java
 
 $BUILD_TOOLS/d8 --output dex obj/com/example/m21hereiam/*.class obj/com/example/m21hereiam/**/*.class 2>/dev/null || \

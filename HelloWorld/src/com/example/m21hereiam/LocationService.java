@@ -64,6 +64,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_NC_PASS         = "nextcloud_pass";
     static final String PREF_SESSION         = "session";
     static final String PREF_ALERT_CODE      = "alert_code";
+    static final String PREF_START_ON_BOOT   = "start_on_boot";
 
     private static final String[] LOG_SUFFIXES = {
         "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
@@ -80,7 +81,8 @@ public class LocationService extends Service implements LocationListener {
     String nextcloudUser  = "";
     String nextcloudPass  = "";
     String session        = "mobyphone";
-    String alertCode      = "911911";
+    String  alertCode     = "911911";
+    boolean startOnBoot   = true;
 
     // ── Current sensor values ─────────────────────────────────────────────────
     double csvLat        = 0;
@@ -234,9 +236,10 @@ public class LocationService extends Service implements LocationListener {
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
         session        = p.getString(PREF_SESSION,     "mobyphone");
-        alertCode      = p.getString(PREF_ALERT_CODE, "911911");
+        alertCode    = p.getString (PREF_ALERT_CODE,    "911911");
+        startOnBoot  = p.getBoolean(PREF_START_ON_BOOT, true);
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
-            + "s session=" + session + " alert=" + alertCode
+            + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 

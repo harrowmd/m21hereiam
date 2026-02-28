@@ -16,6 +16,7 @@ import android.os.IBinder;
 import android.text.InputType;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -246,6 +247,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
+        final CheckBox checkBoot = new CheckBox(this);
+        checkBoot.setText("Start on bootup");
+        checkBoot.setChecked(service.startOnBoot);
+        checkBoot.setPadding(0, dp8 * 2, 0, dp4);
+        layout.addView(checkBoot);
+
         TextView tvBuildInfo = new TextView(this);
         tvBuildInfo.setText(getBuildInfo());
         tvBuildInfo.setTextSize(11);
@@ -272,18 +279,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUrl  = editUrl.getText().toString().trim();
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
-                    service.alertCode     = editAlertCode.getText().toString().trim();
+                    service.alertCode    = editAlertCode.getText().toString().trim();
+                    service.startOnBoot  = checkBoot.isChecked();
                     // Persist to SharedPreferences
                     getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit()
-                        .putInt(LocationService.PREF_INTERVAL,
-                            (int) (service.updateInterval / 1000))
-                        .putInt(LocationService.PREF_UPLOAD_INTERVAL,
-                            (int) (service.uploadInterval / 1000))
-                        .putString(LocationService.PREF_NC_URL,    service.nextcloudUrl)
-                        .putString(LocationService.PREF_NC_USER,   service.nextcloudUser)
-                        .putString(LocationService.PREF_NC_PASS,   service.nextcloudPass)
-                        .putString(LocationService.PREF_SESSION,   service.session)
-                        .putString(LocationService.PREF_ALERT_CODE, service.alertCode)
+                        .putInt    (LocationService.PREF_INTERVAL,        (int) (service.updateInterval / 1000))
+                        .putInt    (LocationService.PREF_UPLOAD_INTERVAL, (int) (service.uploadInterval / 1000))
+                        .putString (LocationService.PREF_NC_URL,          service.nextcloudUrl)
+                        .putString (LocationService.PREF_NC_USER,         service.nextcloudUser)
+                        .putString (LocationService.PREF_NC_PASS,         service.nextcloudPass)
+                        .putString (LocationService.PREF_SESSION,         service.session)
+                        .putString (LocationService.PREF_ALERT_CODE,      service.alertCode)
+                        .putBoolean(LocationService.PREF_START_ON_BOOT,   service.startOnBoot)
                         .apply();
                     service.applySettings();
                 }
