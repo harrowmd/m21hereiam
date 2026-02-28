@@ -27,6 +27,8 @@ import android.util.Base64;
 import android.util.Log;
 
 import android.hardware.camera2.CameraManager;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 
 import java.io.File;
@@ -471,11 +473,33 @@ public class LocationService extends Service implements LocationListener {
             alertActive     = true;
             if (uiListener != null) uiListener.onAlertStarted();
 
-            // Play 4 times with LED flashing; stop early if cancelled
+            // Play 4 times at max volume, LED flashing; stop early if cancelled
             writeLog("Alert: playing 4 times");
+            playAlertAudio(mp3);
+            torchOff();
+            writeLog("Alert: playback complete" + (alertCancelled ? " (cancelled)" : ""));
+            // Keep alertActive=true and button visible until user presses Cancel
+        } catch (Exception e) {
+            writeLog("Alert error: " + e.getMessage());
+            torchOff();
+        }
+    }
+
+    // Play loop extracted so volume is always restored
+    private void playAlertAudio(File mp3) throws Exception {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        int origVol = am.getStreamVolume(AudioManager.STREAM_ALARM);
+        int maxVol  = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+        am.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0);
+        writeLog("Alert: alarm volume set to max (" + maxVol + "), was " + origVol);
+        try {
             for (int i = 0; i < 4 && !alertCancelled; i++) {
                 try {
                     activePlayer = new MediaPlayer();
+                    activePlayer.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build());
                     activePlayer.setDataSource(mp3.getAbsolutePath());
                     activePlayer.prepare();
                     torchOn();
@@ -493,12 +517,9 @@ public class LocationService extends Service implements LocationListener {
                 }
                 if (i < 3 && !alertCancelled) Thread.sleep(5000);
             }
-            torchOff();
-            writeLog("Alert: playback complete" + (alertCancelled ? " (cancelled)" : ""));
-            // Keep alertActive=true and button visible until user presses Cancel
-        } catch (Exception e) {
-            writeLog("Alert error: " + e.getMessage());
-            torchOff();
+        } finally {
+            am.setStreamVolume(AudioManager.STREAM_ALARM, origVol, 0);
+            writeLog("Alert: alarm volume restored to " + origVol);
         }
     }
 
