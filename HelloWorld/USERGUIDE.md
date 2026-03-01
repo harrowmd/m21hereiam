@@ -162,10 +162,10 @@ folder (`Internal Storage / Documents`):
 
 | File | Format | Contents |
 |------|--------|----------|
-| `YYYY-MM-DD-hereiamnow.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery |
-| `YYYY-MM-DD-hereiamnow.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
-| `YYYY-MM-DD-hereiamnow.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
-| `YYYY-MM-DD-hereiamnow.txt` | Plain text | Debug and status log |
+| `YYYY-MM-DD-hia.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery |
+| `YYYY-MM-DD-hia.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
+| `YYYY-MM-DD-hia.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
+| `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log |
 
 Files roll over at midnight. Files older than **30 days** are deleted
 automatically.
@@ -217,10 +217,10 @@ Upload results are written to the `.txt` debug log, for example:
 Upload starting: url=https://cloud.example.com user=myuser session=alice
 MKCOL hereiam/: 405
 MKCOL alice/: 405
-PUT 2026-02-28-hereiamnow.csv (22497 bytes) → HTTP 204
-PUT 2026-02-28-hereiamnow.gpx (39239 bytes) → HTTP 204
-PUT 2026-02-28-hereiamnow.kml (10726 bytes) → HTTP 204
-PUT 2026-02-28-hereiamnow.txt (60191 bytes) → HTTP 204
+PUT 2026-02-28-hia.csv (22497 bytes) → HTTP 204
+PUT 2026-02-28-hia.gpx (39239 bytes) → HTTP 204
+PUT 2026-02-28-hia.kml (10726 bytes) → HTTP 204
+PUT 2026-02-28-hia.txt (60191 bytes) → HTTP 204
 Upload done: 4 file(s) → alice
 ```
 
@@ -260,8 +260,8 @@ Two JPEG images are captured and uploaded automatically:
 
 | File | Camera |
 |------|--------|
-| `YYYY-MM-DD-HHmmss-hereiamnow-alert-front.jpg` | Front (selfie) camera |
-| `YYYY-MM-DD-HHmmss-hereiamnow-alert-rear.jpg` | Rear camera |
+| `YYYY-MM-DD-HHmmss-hia-alert-front.jpg` | Front (selfie) camera |
+| `YYYY-MM-DD-HHmmss-hia-alert-rear.jpg` | Rear camera |
 
 The photos are taken silently in the background so the alarm starts
 without delay. They are uploaded to the same Nextcloud session folder as
@@ -274,7 +274,8 @@ The **Camera** permission must be granted when the app first opens.
 Tap **Cancel Alert** on the screen. This:
 - Stops playback immediately.
 - Turns off the torch and vibration.
-- **Deletes** `911911.mp3` from Nextcloud so the alert does not repeat.
+- **Renames** `{alert code}.mp3` to `YYYY-MM-DD-{alert code}.mp3` on Nextcloud,
+  keeping a timestamped record of the alert and preventing it from repeating.
 
 The debug log records each step:
 
@@ -282,11 +283,11 @@ The debug log records each step:
 Alert: 911911.mp3 found, downloading
 Alert: downloaded 9030 bytes
 Alert photos: capturing front
-Alert photo: saved 2026-03-01-112233-hereiamnow-alert-front.jpg (187432 bytes)
-Alert photo: uploaded 2026-03-01-112233-hereiamnow-alert-front.jpg → HTTP 201
+Alert photo: saved 2026-03-01-112233-hia-alert-front.jpg (187432 bytes)
+Alert photo: uploaded 2026-03-01-112233-hia-alert-front.jpg → HTTP 201
 Alert photos: capturing rear
-Alert photo: saved 2026-03-01-112233-hereiamnow-alert-rear.jpg (243891 bytes)
-Alert photo: uploaded 2026-03-01-112233-hereiamnow-alert-rear.jpg → HTTP 201
+Alert photo: saved 2026-03-01-112233-hia-alert-rear.jpg (243891 bytes)
+Alert photo: uploaded 2026-03-01-112233-hia-alert-rear.jpg → HTTP 201
 Alert: playing 4 times
 Alert: playing (1/4)
 Alert: playing (2/4)
@@ -294,7 +295,7 @@ Alert: playing (3/4)
 Alert: playing (4/4)
 Alert: playback complete
 Alert: cancelled by user
-Alert: 911911.mp3 deleted from Nextcloud (HTTP 204)
+Alert: 911911.mp3 renamed to 2026-03-01-911911.mp3 on Nextcloud
 ```
 
 ---
