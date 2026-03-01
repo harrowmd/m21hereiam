@@ -3,7 +3,8 @@
 **Here I Am Now** is an Android GPS tracking app that records your location,
 saves it to log files on the phone, and uploads them automatically to a
 Nextcloud or OwnCloud server. It runs continuously in the background and can
-alert you remotely by playing a sound on the phone.
+alert you remotely by playing a sound, flashing the torch, vibrating the
+phone, and taking photographs.
 
 The app requires no Google Play Services and works on any Android phone
 running Android 5.0 (API 21) or later, including de-Googled and custom ROM
@@ -35,7 +36,8 @@ Google Play Store.
    apps** (or **Unknown sources**) for your browser or file manager.
 2. Download or copy `m21hereiamnow.apk` to the phone.
 3. Open the APK file and tap **Install**.
-4. When the app first opens, grant the **Location** permission when prompted.
+4. When the app first opens, grant the **Location** and **Camera** permissions
+   when prompted.
 
 > On Android 11 and later the app uses the standard `Documents` folder
 > without needing storage permission.
@@ -54,9 +56,9 @@ location. Two buttons are visible:
 | ⚙ (grey) | Top-right | Opens the Settings dialog |
 | ⊕ (blue) | Bottom-right | Re-centres the map on your current position |
 
-Your **current location** is shown as a solid blue dot in the centre of the
-map. A trail of smaller blue dots shows every recorded position from the
-**last 24 hours**.
+Your **current location** is shown as a solid blue dot. A trail of smaller
+blue dots shows previously recorded positions within the **Display period**
+and with at least **Min satellites** in fix (see [Settings](#5-settings)).
 
 The notification bar at the top of the phone will show a persistent
 **"Here I Am Now"** notification while the app is running, displaying your
@@ -131,6 +133,22 @@ A numeric or text code used for the remote alert feature (see
 [Section 8](#8-remote-alert-system)).
 Default: `911911`
 
+### Min satellites
+The minimum number of GPS satellites required for a fix to be shown as a
+small blue dot on the map. Fixes with fewer satellites than this value are
+recorded in the log files but not displayed on the map trail.
+Default: `4`
+
+Set to `0` to display all recorded positions regardless of GPS quality.
+
+### Display period (hours)
+How far back in time the map trail of small blue dots extends.
+Default: `12` hours.
+
+For example, with the default setting only fixes from the last 12 hours are
+shown on the map. Increase this to see a longer history. Changing this
+setting and tapping **Save** updates the map immediately.
+
 ### Start on bootup
 When ticked (default), the app starts automatically when the phone is
 switched on. No manual launch is needed.
@@ -139,14 +157,14 @@ switched on. No manual launch is needed.
 
 ## 6. Log Files
 
-The app writes three log files per day, plus one debug log, all stored in
-the phone's **Documents** folder (`Internal Storage / Documents`):
+The app writes four log files per day, all stored in the phone's **Documents**
+folder (`Internal Storage / Documents`):
 
 | File | Format | Contents |
 |------|--------|----------|
 | `YYYY-MM-DD-hereiamnow.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery |
-| `YYYY-MM-DD-hereiamnow.gpx` | GPX 1.1 | GPS track, suitable for mapping software |
-| `YYYY-MM-DD-hereiamnow.kml` | KML 2.2 | GPS track, suitable for Google Earth |
+| `YYYY-MM-DD-hereiamnow.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
+| `YYYY-MM-DD-hereiamnow.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
 | `YYYY-MM-DD-hereiamnow.txt` | Plain text | Debug and status log |
 
 Files roll over at midnight. Files older than **30 days** are deleted
@@ -156,8 +174,22 @@ automatically.
 
 ```
 timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct
-2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,0,100
+2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,6,100
 ```
+
+### GPX format
+
+Standard GPX 1.1 track file with `<trkpt>` elements containing latitude,
+longitude, altitude, UTC timestamp, and satellite count. Compatible with
+OsmAnd, GPSLogger, OpenStreetMap GPS Traces, and other mapping tools.
+
+### KML format
+
+Each GPS fix is written as both:
+- An individual **`<Point>` placemark** named with the timestamp — imported
+  as a waypoint/POI by apps such as Magic Earth.
+- A **`<LineString>` track** connecting all fixes for the day — displayed as
+  a route line in Google Earth and other KML viewers.
 
 ---
 
@@ -199,8 +231,9 @@ Upload done: 4 file(s) → alice
 
 ## 8. Remote Alert System
 
-You can trigger an audio/vibration/light alert on the phone remotely by
-uploading an MP3 file to Nextcloud.
+You can trigger a full alert on the phone remotely by uploading an MP3 file
+to Nextcloud. When triggered the phone plays an alarm, flashes the torch,
+vibrates, and **takes photographs** from both cameras.
 
 ### How it works
 
@@ -209,14 +242,32 @@ uploading an MP3 file to Nextcloud.
    ```
    hereiam/{session}/911911.mp3
    ```
-2. At the next upload interval the phone detects the file, downloads it,
-   and plays it **4 times** with 5-second pauses between plays.
-3. While each play is active:
+2. At the next upload interval the phone detects the file and immediately:
+   - **Takes a photograph** from the front camera.
+   - **Takes a photograph** from the rear camera.
+   - Uploads both JPEG images to the same Nextcloud session folder.
+3. The phone then plays the MP3 **4 times** with 5-second pauses between
+   plays. During each play:
    - The MP3 plays at **maximum alarm volume**, bypassing Do Not Disturb.
    - The **camera LED torch flashes** on and off.
    - The **phone vibrates** in sync with the flash.
 4. A red **Cancel Alert** button appears at the top of the screen.
 5. The alert repeats every upload cycle until **Cancel Alert** is tapped.
+
+### Alert photographs
+
+Two JPEG images are captured and uploaded automatically:
+
+| File | Camera |
+|------|--------|
+| `YYYY-MM-DD-HHmmss-hereiamnow-alert-front.jpg` | Front (selfie) camera |
+| `YYYY-MM-DD-HHmmss-hereiamnow-alert-rear.jpg` | Rear camera |
+
+The photos are taken silently in the background so the alarm starts
+without delay. They are uploaded to the same Nextcloud session folder as
+the log files.
+
+The **Camera** permission must be granted when the app first opens.
 
 ### Cancelling the alert
 
@@ -230,6 +281,12 @@ The debug log records each step:
 ```
 Alert: 911911.mp3 found, downloading
 Alert: downloaded 9030 bytes
+Alert photos: capturing front
+Alert photo: saved 2026-03-01-112233-hereiamnow-alert-front.jpg (187432 bytes)
+Alert photo: uploaded 2026-03-01-112233-hereiamnow-alert-front.jpg → HTTP 201
+Alert photos: capturing rear
+Alert photo: saved 2026-03-01-112233-hereiamnow-alert-rear.jpg (243891 bytes)
+Alert photo: uploaded 2026-03-01-112233-hereiamnow-alert-rear.jpg → HTTP 201
 Alert: playing 4 times
 Alert: playing (1/4)
 Alert: playing (2/4)
@@ -283,7 +340,7 @@ dialog, for example:
 
 ```
 Here I Am Now  v1.0 (1)
-Built: 2026-02-28 14:35
+Built: 2026-03-01 11:09
 ```
 
 Source code: https://github.com/harrowmd/m21hereiam
