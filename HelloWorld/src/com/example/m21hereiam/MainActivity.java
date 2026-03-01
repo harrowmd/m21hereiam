@@ -276,6 +276,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvBuildInfo.setPadding(0, dp8 * 3, 0, dp4);
         layout.addView(tvBuildInfo);
 
+        final TextView tvUpdateStatus = new TextView(this);
+        tvUpdateStatus.setText("Checking for updates\u2026");
+        tvUpdateStatus.setTextSize(12);
+        tvUpdateStatus.setPadding(0, dp4, 0, dp4);
+        layout.addView(tvUpdateStatus);
+
+        final Button btnInstall = new Button(this);
+        btnInstall.setVisibility(View.GONE);
+        layout.addView(btnInstall);
+
+        checkForUpdate(tvUpdateStatus, btnInstall);
+
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
 
@@ -327,6 +339,153 @@ public class MainActivity extends Activity implements LocationService.Listener {
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    // ── Update check ──────────────────────────────────────────────────────────
+
+    private void checkForUpdate(final TextView tvStatus, final Button btnInstall) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                        new java.net.URL("https://api.github.com/repos/harrowmd/m21hereiam/releases/latest")
+                            .openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(10000);
+                    c.setRequestProperty("Accept", "application/vnd.github+json");
+                    int code = c.getResponseCode();
+                    if (code != 200) {
+                        c.disconnect();
+                        postUpdateStatus(tvStatus, "Update check failed (HTTP " + code + ")");
+                        return;
+                    }
+                    java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(c.getInputStream()));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line);
+                    br.close();
+                    c.disconnect();
+
+                    String json        = sb.toString();
+                    String tagName     = extractJsonString(json, "tag_name");
+                    String downloadUrl = extractJsonString(json, "browser_download_url");
+                    if (tagName == null || downloadUrl == null) {
+                        postUpdateStatus(tvStatus, "Update check failed (parse error)");
+                        return;
+                    }
+
+                    String latestVer = tagName.startsWith("v") ? tagName.substring(1) : tagName;
+                    PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+                    if (latestVer.equals(pi.versionName)) {
+                        postUpdateStatus(tvStatus, "Up to date (v" + pi.versionName + ")");
+                    } else {
+                        final String dl  = downloadUrl;
+                        final String tag = tagName;
+                        runOnUiThread(new Runnable() {
+                            @Override public void run() {
+                                tvStatus.setText("New version available: " + tag);
+                                tvStatus.setTextColor(0xFF006600);
+                                btnInstall.setText("Download & Install " + tag);
+                                btnInstall.setVisibility(View.VISIBLE);
+                                btnInstall.setOnClickListener(new View.OnClickListener() {
+                                    @Override public void onClick(View v) {
+                                        downloadAndInstall(dl, tag, tvStatus, btnInstall);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    postUpdateStatus(tvStatus, "Update check failed: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    private void postUpdateStatus(final TextView tv, final String msg) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() { tv.setText(msg); }
+        });
+    }
+
+    private void downloadAndInstall(final String url, final String tag,
+                                     final TextView tvStatus, final Button btnInstall) {
+        tvStatus.setText("Downloading " + tag + "\u2026");
+        btnInstall.setEnabled(false);
+        // Remove any old download file first
+        java.io.File old = new java.io.File(
+            android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS), "m21hereiamnow-update.apk");
+        if (old.exists()) old.delete();
+
+        final android.app.DownloadManager dm =
+            (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        android.app.DownloadManager.Request req =
+            new android.app.DownloadManager.Request(android.net.Uri.parse(url));
+        req.setTitle("Here I Am Now " + tag);
+        req.setDescription("Downloading update\u2026");
+        req.setNotificationVisibility(
+            android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        req.setMimeType("application/vnd.android.package-archive");
+        req.setDestinationInExternalPublicDir(
+            android.os.Environment.DIRECTORY_DOWNLOADS, "m21hereiamnow-update.apk");
+        final long downloadId = dm.enqueue(req);
+
+        new Thread(new Runnable() {
+            @Override public void run() {
+                boolean running = true;
+                while (running) {
+                    try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                    android.app.DownloadManager.Query q = new android.app.DownloadManager.Query();
+                    q.setFilterById(downloadId);
+                    android.database.Cursor cursor = dm.query(q);
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int status = cursor.getInt(
+                            cursor.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS));
+                        if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+                            running = false;
+                            cursor.close();
+                            final android.net.Uri apkUri = dm.getUriForDownloadedFile(downloadId);
+                            runOnUiThread(new Runnable() {
+                                @Override public void run() {
+                                    tvStatus.setText("Download complete");
+                                    Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+                                    install.setData(apkUri);
+                                    install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                    install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    startActivity(install);
+                                }
+                            });
+                        } else if (status == android.app.DownloadManager.STATUS_FAILED) {
+                            running = false;
+                            cursor.close();
+                            runOnUiThread(new Runnable() {
+                                @Override public void run() {
+                                    tvStatus.setText("Download failed");
+                                    btnInstall.setEnabled(true);
+                                }
+                            });
+                        } else {
+                            cursor.close();
+                        }
+                    } else {
+                        if (cursor != null) cursor.close();
+                    }
+                }
+            }
+        }).start();
+    }
+
+    private String extractJsonString(String json, String key) {
+        String search = "\"" + key + "\":";
+        int idx = json.indexOf(search);
+        if (idx < 0) return null;
+        int start = json.indexOf('"', idx + search.length());
+        if (start < 0) return null;
+        int end = json.indexOf('"', start + 1);
+        if (end < 0) return null;
+        return json.substring(start + 1, end);
     }
 
     private String getBuildInfo() {
