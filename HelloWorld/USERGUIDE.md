@@ -184,6 +184,11 @@ appears. Tap it to download the new APK in the background (a progress
 notification is shown) and launch the system installer automatically
 when the download is complete.
 
+A permanent **Reinstall from GitHub** button is always shown below the
+version check. Use this to re-download and reinstall the current
+release APK at any time — for example to pick up minor fixes that have
+been published to the release without a version number change.
+
 ---
 
 ## 6. Log Files
