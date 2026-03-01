@@ -294,6 +294,17 @@ public class MainActivity extends Activity implements LocationService.Listener {
         btnInstall.setVisibility(View.GONE);
         layout.addView(btnInstall);
 
+        final Button btnReinstall = new Button(this);
+        btnReinstall.setText("Reinstall from GitHub");
+        btnReinstall.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                downloadAndInstall(
+                    "https://github.com/harrowmd/m21hereiam/releases/latest/download/m21hereiamnow.apk",
+                    "latest", tvUpdateStatus, btnReinstall);
+            }
+        });
+        layout.addView(btnReinstall);
+
         checkForUpdate(tvUpdateStatus, btnInstall);
 
         ScrollView scroll = new ScrollView(this);
