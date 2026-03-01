@@ -423,7 +423,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 Date now = new Date();
                 for (int d = daysBack; d >= 0; d--) {
                     Date day = new Date(now.getTime() - d * 24L * 60 * 60 * 1000);
-                    File f = new File(dir, dateFmt.format(day) + "-hereiamnow.csv");
+                    File f = new File(dir, dateFmt.format(day) + "-hia.csv");
                     if (!f.exists()) continue;
                     try {
                         BufferedReader br = new BufferedReader(new FileReader(f));

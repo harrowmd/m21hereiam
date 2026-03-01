@@ -84,7 +84,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_NUM_GPS_FIXES   = "num_gps_fixes";
 
     private static final String[] LOG_SUFFIXES = {
-        "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
+        "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
     };
     private static final String GPX_CLOSE =
         "    </trkseg>\n  </trk>\n</gpx>\n";
@@ -663,7 +663,7 @@ public class LocationService extends Service implements LocationListener {
         int[] facings = {CameraCharacteristics.LENS_FACING_FRONT, CameraCharacteristics.LENS_FACING_BACK};
         for (int facing : facings) {
             String facingName = (facing == CameraCharacteristics.LENS_FACING_FRONT) ? "front" : "rear";
-            String fileName   = today + "-" + timestamp + "-hereiamnow-alert-" + facingName + ".jpg";
+            String fileName   = today + "-" + timestamp + "-hia-alert-" + facingName + ".jpg";
             try {
                 String cameraId = null;
                 for (String id : cm.getCameraIdList()) {
@@ -854,7 +854,7 @@ public class LocationService extends Service implements LocationListener {
     private void saveToCsv(double[] avg) {
         File dir  = docsDir();
         Date now  = new Date();
-        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
+        File file = new File(dir, dateFmt.format(now) + "-hia.csv");
         boolean isNew = !file.exists();
         try {
             FileWriter fw = new FileWriter(file, true);
@@ -868,13 +868,13 @@ public class LocationService extends Service implements LocationListener {
         } catch (IOException e) {
             writeLog("CSV write error: " + e.getMessage());
         }
-        deleteOldFiles(dir, "-hereiamnow.csv");
+        deleteOldFiles(dir, "-hia.csv");
     }
 
     private void saveToGpx(double[] avg) {
         File dir  = docsDir();
         Date now  = new Date();
-        File file = new File(dir, dateFmt.format(now) + "-hereiamnow.gpx");
+        File file = new File(dir, dateFmt.format(now) + "-hia.gpx");
         try {
             if (!file.exists()) {
                 FileWriter fw = new FileWriter(file);
@@ -899,14 +899,14 @@ public class LocationService extends Service implements LocationListener {
         } catch (IOException e) {
             writeLog("GPX write error: " + e.getMessage());
         }
-        deleteOldFiles(dir, "-hereiamnow.gpx");
+        deleteOldFiles(dir, "-hia.gpx");
     }
 
     private void saveToKml(double[] avg) {
         File   dir   = docsDir();
         Date   now   = new Date();
         String today = dateFmt.format(now);
-        File   file  = new File(dir, today + "-hereiamnow.kml");
+        File   file  = new File(dir, today + "-hia.kml");
 
         // Clear list on date rollover
         if (!today.equals(kmlCurrentDate)) {
@@ -953,11 +953,11 @@ public class LocationService extends Service implements LocationListener {
         } catch (IOException e) {
             writeLog("KML write error: " + e.getMessage());
         }
-        deleteOldFiles(dir, "-hereiamnow.kml");
+        deleteOldFiles(dir, "-hia.kml");
     }
 
     private void loadKmlFromCsv(File dir, String today) {
-        File csv = new File(dir, today + "-hereiamnow.csv");
+        File csv = new File(dir, today + "-hia.csv");
         if (!csv.exists()) return;
         try {
             java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(csv));
@@ -987,7 +987,7 @@ public class LocationService extends Service implements LocationListener {
         Log.d(TAG, message);
         File dir = docsDir();
         Date now = new Date();
-        File logFile = new File(dir, dateFmt.format(now) + "-hereiamnow.txt");
+        File logFile = new File(dir, dateFmt.format(now) + "-hia.txt");
         try {
             FileWriter fw = new FileWriter(logFile, true);
             fw.write(tsFmt.format(now) + " " + message + "\n");
