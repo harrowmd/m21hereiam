@@ -96,7 +96,7 @@ public class LocationService extends Service implements LocationListener {
     // ── Settings ──────────────────────────────────────────────────────────────
     long   updateInterval = 60_000;
     long   uploadInterval = 300_000;
-    String nextcloudUrl   = "https://cloud.manytwo.one";
+    String nextcloudUrl   = "https://cloud.example.com";
     String nextcloudUser  = "";
     String nextcloudPass  = "";
     String session        = "mobyphone";
@@ -270,7 +270,7 @@ public class LocationService extends Service implements LocationListener {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         updateInterval = p.getInt(PREF_INTERVAL,        60)  * 1000L;
         uploadInterval = p.getInt(PREF_UPLOAD_INTERVAL, 300) * 1000L;
-        nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.manytwo.one");
+        nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.example.com");
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
         session        = p.getString(PREF_SESSION,     "mobyphone");
