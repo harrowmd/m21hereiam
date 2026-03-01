@@ -65,6 +65,8 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_SESSION         = "session";
     static final String PREF_ALERT_CODE      = "alert_code";
     static final String PREF_START_ON_BOOT   = "start_on_boot";
+    static final String PREF_MIN_SAT         = "min_sat";
+    static final String PREF_DISPLAY_PERIOD  = "display_period_hours";
 
     private static final String[] LOG_SUFFIXES = {
         "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
@@ -83,8 +85,10 @@ public class LocationService extends Service implements LocationListener {
     String nextcloudUser  = "";
     String nextcloudPass  = "";
     String session        = "mobyphone";
-    String  alertCode     = "911911";
-    boolean startOnBoot   = true;
+    String  alertCode          = "911911";
+    boolean startOnBoot        = true;
+    int     minSat             = 4;
+    int     displayPeriodHours = 12;
 
     // ── Current sensor values ─────────────────────────────────────────────────
     double csvLat        = 0;
@@ -240,10 +244,13 @@ public class LocationService extends Service implements LocationListener {
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
         session        = p.getString(PREF_SESSION,     "mobyphone");
-        alertCode    = p.getString (PREF_ALERT_CODE,    "911911");
-        startOnBoot  = p.getBoolean(PREF_START_ON_BOOT, true);
+        alertCode          = p.getString (PREF_ALERT_CODE,    "911911");
+        startOnBoot        = p.getBoolean(PREF_START_ON_BOOT, true);
+        minSat             = p.getInt    (PREF_MIN_SAT,        4);
+        displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
+            + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 

@@ -249,6 +249,16 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
+        layout.addView(label("Min satellites for map display"));
+        final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(service.minSat));
+        layout.addView(editMinSat);
+
+        layout.addView(label("Display period (hours)"));
+        final EditText editDisplayPeriod = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(service.displayPeriodHours));
+        layout.addView(editDisplayPeriod);
+
         final CheckBox checkBoot = new CheckBox(this);
         checkBoot.setText("Start on bootup");
         checkBoot.setChecked(service.startOnBoot);
@@ -283,6 +293,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudPass = editPass.getText().toString();
                     service.alertCode    = editAlertCode.getText().toString().trim();
                     service.startOnBoot  = checkBoot.isChecked();
+                    try { service.minSat =
+                        Math.max(0, Integer.parseInt(editMinSat.getText().toString().trim())); }
+                    catch (NumberFormatException ignored) {}
+                    try { service.displayPeriodHours =
+                        Math.max(1, Integer.parseInt(editDisplayPeriod.getText().toString().trim())); }
+                    catch (NumberFormatException ignored) {}
                     // Persist to SharedPreferences
                     getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit()
                         .putInt    (LocationService.PREF_INTERVAL,        (int) (service.updateInterval / 1000))
@@ -293,8 +309,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putString (LocationService.PREF_SESSION,         service.session)
                         .putString (LocationService.PREF_ALERT_CODE,      service.alertCode)
                         .putBoolean(LocationService.PREF_START_ON_BOOT,   service.startOnBoot)
+                        .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
+                        .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
                         .apply();
                     service.applySettings();
+                    loadTrackPoints(); // refresh map with new filters
                 }
             })
             .setNegativeButton("Cancel", null)
@@ -382,18 +401,17 @@ public class MainActivity extends Activity implements LocationService.Listener {
     private void loadTrackPoints() {
         if (!bound) return;
         final File dir    = service.docsDir();
-        final long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+        final int  minSat = service.minSat;
+        final long cutoff = System.currentTimeMillis() - service.displayPeriodHours * 3600_000L;
+        // Number of past days to scan: enough to cover the display period
+        final int daysBack = (int) Math.ceil(service.displayPeriodHours / 24.0) + 1;
         new Thread(new Runnable() {
             @Override public void run() {
                 List<double[]> points = new ArrayList<>();
-                Date now       = new Date();
-                Date yesterday = new Date(now.getTime() - 24L * 60 * 60 * 1000);
-                String[] names = {
-                    dateFmt.format(yesterday) + "-hereiamnow.csv",
-                    dateFmt.format(now)        + "-hereiamnow.csv"
-                };
-                for (String name : names) {
-                    File f = new File(dir, name);
+                Date now = new Date();
+                for (int d = daysBack; d >= 0; d--) {
+                    Date day = new Date(now.getTime() - d * 24L * 60 * 60 * 1000);
+                    File f = new File(dir, dateFmt.format(day) + "-hereiamnow.csv");
                     if (!f.exists()) continue;
                     try {
                         BufferedReader br = new BufferedReader(new FileReader(f));
@@ -402,10 +420,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         while ((line = br.readLine()) != null) {
                             if (header) { header = false; continue; }
                             String[] cols = line.split(",");
-                            if (cols.length < 5) continue;
+                            if (cols.length < 8) continue;
                             try {
                                 Date ts = tsFmt.parse(cols[0]);
                                 if (ts == null || ts.getTime() < cutoff) continue;
+                                int sats = Integer.parseInt(cols[7]);
+                                if (sats < minSat) continue;
                                 double lat = Double.parseDouble(cols[3]);
                                 double lon = Double.parseDouble(cols[4]);
                                 points.add(new double[]{lat, lon});
