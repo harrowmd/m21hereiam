@@ -162,6 +162,21 @@ raw fix. Set to `1` to disable averaging and log each fix immediately.
 When ticked (default), the app starts automatically when the phone is
 switched on. No manual launch is needed.
 
+### App updates
+Each time the Settings dialog is opened, the app checks GitHub for a
+newer release. The result is shown below the build information:
+
+| Message | Meaning |
+|---------|---------|
+| `Checking for updates…` | Check in progress |
+| `Up to date (v1.0)` | You have the latest version |
+| `New version available: v1.x` | A newer release exists |
+
+When a new version is available, a **Download & Install vX.Y** button
+appears. Tap it to download the new APK in the background (a progress
+notification is shown) and launch the system installer automatically
+when the download is complete.
+
 ---
 
 ## 6. Log Files
@@ -345,12 +360,13 @@ To disable this, open Settings, untick **Start on bootup**, and tap Save.
 
 ## Build information
 
-The app version and build date are shown at the bottom of the Settings
-dialog, for example:
+The app version, build date, and update status are shown at the bottom
+of the Settings dialog, for example:
 
 ```
 Here I Am Now  v1.0 (1)
-Built: 2026-03-01 11:09
+Built: 2026-03-01 15:48
+Up to date (v1.0)
 ```
 
-Source code: https://github.com/harrowmd/m21hereiam
+Source code and releases: https://github.com/harrowmd/m21hereiam
