@@ -633,23 +633,48 @@ public class LocationService extends Service implements LocationListener {
             @Override public void run() {
                 try {
                     String today   = dateFmt.format(new Date());
+                    String newName = today + "-" + fileName;
                     String destUrl = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1)
-                                     + enc(today + "-" + fileName);
-                    HttpURLConnection c = (HttpURLConnection) new URL(sourceUrl).openConnection();
-                    c.setRequestMethod("MOVE");
-                    c.setRequestProperty("Authorization", auth);
-                    c.setRequestProperty("Destination", destUrl);
-                    c.setRequestProperty("Overwrite", "T");
-                    c.setConnectTimeout(15000);
-                    c.setReadTimeout(15000);
-                    int httpCode = c.getResponseCode();
-                    c.disconnect();
-                    if (httpCode < 300)
-                        writeLog("Alert: " + fileName + " renamed to " + today + "-" + fileName + " on Nextcloud (HTTP " + httpCode + ")");
+                                     + enc(newName);
+
+                    // Read local copy (already downloaded during alert)
+                    File localFile = new File(docsDir(), fileName);
+                    byte[] data = new byte[(int) localFile.length()];
+                    java.io.FileInputStream fis = new java.io.FileInputStream(localFile);
+                    fis.read(data);
+                    fis.close();
+
+                    // PUT with new name
+                    HttpURLConnection put = (HttpURLConnection) new URL(destUrl).openConnection();
+                    put.setRequestMethod("PUT");
+                    put.setRequestProperty("Authorization", auth);
+                    put.setDoOutput(true);
+                    put.setFixedLengthStreamingMode(data.length);
+                    put.setConnectTimeout(15000);
+                    put.setReadTimeout(30000);
+                    put.getOutputStream().write(data);
+                    put.getOutputStream().close();
+                    int putCode = put.getResponseCode();
+                    put.disconnect();
+                    if (putCode >= 300) {
+                        writeLog("Alert: PUT " + newName + " failed (HTTP " + putCode + ")");
+                        return;
+                    }
+
+                    // DELETE original
+                    HttpURLConnection del = (HttpURLConnection) new URL(sourceUrl).openConnection();
+                    del.setRequestMethod("DELETE");
+                    del.setRequestProperty("Authorization", auth);
+                    del.setConnectTimeout(15000);
+                    del.setReadTimeout(15000);
+                    int delCode = del.getResponseCode();
+                    del.disconnect();
+                    if (delCode < 300)
+                        writeLog("Alert: " + fileName + " renamed to " + newName + " on Nextcloud");
                     else
-                        writeLog("Alert: MOVE " + fileName + " failed (HTTP " + httpCode + ")");
+                        writeLog("Alert: DELETE " + fileName + " failed (HTTP " + delCode + ")");
                 } catch (Exception e) {
-                    writeLog("Alert: MOVE " + fileName + " failed: " + e.getMessage());
+                    writeLog("Alert: rename " + fileName + " failed: " + e.getMessage());
                 }
             }
         }).start();
