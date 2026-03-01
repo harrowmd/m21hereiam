@@ -101,7 +101,7 @@ while the app is running.
 
 Tap the ⚙ button to open the Settings dialog. Scroll down to see all
 options. Tap **Save** to apply changes immediately; tap **Cancel** to
-discard. Tap **? Help** at the top to open the built-in help page.
+discard. Tap **Help** at the top to open the built-in help page.
 
 ![Settings — top](screen_settings.png)
 ![Settings — bottom](screen_settings2.png)
@@ -162,6 +162,13 @@ raw fix. Set to `1` to disable averaging and log each fix immediately.
 When ticked (default), the app starts automatically when the phone is
 switched on. No manual launch is needed.
 
+### Help
+Tap the **Help** button at the top of the Settings dialog to open the
+built-in help page. The page is titled **Here I Am Now for Nextcloud**
+and covers a summary of the app, how it works, all settings, the remote
+alert system, log file formats, and the in-app update feature. A
+contact email link is shown at the bottom of the page.
+
 ### App updates
 Each time the Settings dialog is opened, the app checks GitHub for a
 newer release. The result is shown below the build information:
@@ -169,7 +176,7 @@ newer release. The result is shown below the build information:
 | Message | Meaning |
 |---------|---------|
 | `Checking for updates…` | Check in progress |
-| `Up to date (v1.0)` | You have the latest version |
+| `Up to date (v1.1)` | You have the latest version |
 | `New version available: v1.x` | A newer release exists |
 
 When a new version is available, a **Download & Install vX.Y** button
