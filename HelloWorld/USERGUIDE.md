@@ -101,7 +101,7 @@ while the app is running.
 
 Tap the ⚙ button to open the Settings dialog. Scroll down to see all
 options. Tap **Save** to apply changes immediately; tap **Cancel** to
-discard.
+discard. Tap **? Help** at the top to open the built-in help page.
 
 ![Settings — top](screen_settings.png)
 ![Settings — bottom](screen_settings2.png)
@@ -364,9 +364,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v1.0 (1)
-Built: 2026-03-01 15:48
-Up to date (v1.0)
+Here I Am Now  v1.1 (2)
+Built: 2026-03-01 16:59
+Up to date (v1.1)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
