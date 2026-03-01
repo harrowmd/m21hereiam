@@ -354,6 +354,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED)
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.CAMERA);
         // WRITE_EXTERNAL_STORAGE is silently ignored on Android 11+ (API 30+)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
                 checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)

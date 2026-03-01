@@ -26,8 +26,22 @@ import android.os.IBinder;
 import android.util.Base64;
 import android.util.Log;
 
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.graphics.ImageFormat;
 import android.media.AudioAttributes;
+import android.media.Image;
+import android.media.ImageReader;
+import android.os.HandlerThread;
+import android.util.Size;
+import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.VibrationEffect;
@@ -200,7 +214,13 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         try {
-            startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION |
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+            } else {
+                startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
+            }
         } catch (Exception e) {
             Log.e(TAG, "startForeground failed: " + e.getMessage());
         }
@@ -486,6 +506,13 @@ public class LocationService extends Service implements LocationListener {
             gc.disconnect();
             writeLog("Alert: downloaded " + mp3.length() + " bytes");
 
+            // Take front + rear photos and upload (runs in its own thread so alarm starts immediately)
+            final String photoDest = sessionDir;
+            final String photoAuth = auth;
+            new Thread(new Runnable() {
+                @Override public void run() { takeAlertPhotos(photoDest, photoAuth); }
+            }).start();
+
             // Store URL/auth so cancelAlert() can delete from Nextcloud
             activeAlertUrl  = alertUrl;
             activeAlertAuth = auth;
@@ -603,6 +630,136 @@ public class LocationService extends Service implements LocationListener {
                 }
             }
         }).start();
+    }
+
+    // ── Alert camera photos ───────────────────────────────────────────────────
+
+    private void takeAlertPhotos(String sessionDir, String auth) {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            writeLog("Alert photos: CAMERA permission not granted, skipping");
+            return;
+        }
+        CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+        String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
+        String today     = dateFmt.format(new Date());
+        int[] facings = {CameraCharacteristics.LENS_FACING_FRONT, CameraCharacteristics.LENS_FACING_BACK};
+        for (int facing : facings) {
+            String facingName = (facing == CameraCharacteristics.LENS_FACING_FRONT) ? "front" : "rear";
+            String fileName   = today + "-" + timestamp + "-hereiamnow-alert-" + facingName + ".jpg";
+            try {
+                String cameraId = null;
+                for (String id : cm.getCameraIdList()) {
+                    Integer f = cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING);
+                    if (f != null && f == facing) { cameraId = id; break; }
+                }
+                if (cameraId == null) {
+                    writeLog("Alert photos: no " + facingName + " camera found");
+                    continue;
+                }
+                writeLog("Alert photos: capturing " + facingName);
+                takeAndUploadPhoto(cm, cameraId, facingName, fileName, sessionDir, auth);
+            } catch (Exception e) {
+                writeLog("Alert photos: " + facingName + " error: " + e.getMessage());
+            }
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void takeAndUploadPhoto(CameraManager cm, String cameraId, final String facingName,
+                                     final String fileName, final String sessionDir,
+                                     final String auth) throws Exception {
+        // Pick best JPEG size up to 2MP
+        StreamConfigurationMap map = cm.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
+        Size picSize = sizes[0];
+        for (Size s : sizes) {
+            long area = (long) s.getWidth() * s.getHeight();
+            long best = (long) picSize.getWidth() * picSize.getHeight();
+            if (area <= 2_000_000L && area > best) picSize = s;
+            else if (best > 2_000_000L && area < best) picSize = s;
+        }
+
+        HandlerThread ht = new HandlerThread("AlertCam_" + facingName);
+        ht.start();
+        android.os.Handler handler = new android.os.Handler(ht.getLooper());
+        final CountDownLatch latch  = new CountDownLatch(1);
+        final File outFile          = new File(docsDir(), fileName);
+        final CameraDevice[] camRef = {null};
+
+        final ImageReader reader = ImageReader.newInstance(
+            picSize.getWidth(), picSize.getHeight(), ImageFormat.JPEG, 1);
+        reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+            @Override public void onImageAvailable(ImageReader r) {
+                Image img = r.acquireLatestImage();
+                if (img != null) {
+                    ByteBuffer buf   = img.getPlanes()[0].getBuffer();
+                    byte[]     bytes = new byte[buf.remaining()];
+                    buf.get(bytes);
+                    img.close();
+                    try {
+                        FileOutputStream fos = new FileOutputStream(outFile);
+                        fos.write(bytes); fos.close();
+                        writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
+                        int code = putFile(outFile, sessionDir + enc(fileName), auth);
+                        writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
+                    } catch (Exception e) {
+                        writeLog("Alert photo: save/upload error: " + e.getMessage());
+                    }
+                }
+                if (camRef[0] != null) { try { camRef[0].close(); } catch (Exception ignored) {} }
+                latch.countDown();
+            }
+        }, handler);
+
+        try {
+            cm.openCamera(cameraId, new CameraDevice.StateCallback() {
+                @Override public void onOpened(CameraDevice camera) {
+                    camRef[0] = camera;
+                    try {
+                        CaptureRequest.Builder builder =
+                            camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                        builder.addTarget(reader.getSurface());
+                        builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                        camera.createCaptureSession(
+                            Collections.singletonList(reader.getSurface()),
+                            new CameraCaptureSession.StateCallback() {
+                                @Override public void onConfigured(CameraCaptureSession session) {
+                                    try {
+                                        session.capture(builder.build(), null, handler);
+                                    } catch (Exception e) {
+                                        writeLog("Alert photo: capture error: " + e.getMessage());
+                                        try { camera.close(); } catch (Exception ignored) {}
+                                        latch.countDown();
+                                    }
+                                }
+                                @Override public void onConfigureFailed(CameraCaptureSession session) {
+                                    writeLog("Alert photo: session config failed");
+                                    try { camera.close(); } catch (Exception ignored) {}
+                                    latch.countDown();
+                                }
+                            }, handler);
+                    } catch (Exception e) {
+                        writeLog("Alert photo: setup error: " + e.getMessage());
+                        try { camera.close(); } catch (Exception ignored) {}
+                        latch.countDown();
+                    }
+                }
+                @Override public void onDisconnected(CameraDevice camera) {
+                    try { camera.close(); } catch (Exception ignored) {}
+                    latch.countDown();
+                }
+                @Override public void onError(CameraDevice camera, int error) {
+                    writeLog("Alert photo: camera error " + error);
+                    try { camera.close(); } catch (Exception ignored) {}
+                    latch.countDown();
+                }
+            }, handler);
+            latch.await(15, TimeUnit.SECONDS);
+        } finally {
+            reader.close();
+            ht.quitSafely();
+        }
     }
 
     private void torchOn() {
