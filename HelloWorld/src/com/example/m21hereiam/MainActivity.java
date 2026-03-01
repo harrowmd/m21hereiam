@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.text.Html;
 import android.text.InputType;
 import android.view.View;
 import android.widget.Button;
@@ -192,6 +193,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp16, dp8, dp16, dp8);
 
+        Button btnHelp = new Button(this);
+        btnHelp.setText("? Help");
+        btnHelp.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showHelpDialog(); }
+        });
+        layout.addView(btnHelp);
+
         layout.addView(label("Session name"));
         final EditText editSession = editText(InputType.TYPE_CLASS_TEXT, service.session);
         layout.addView(editSession);
@@ -338,6 +346,78 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 }
             })
             .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    // ── Help dialog ───────────────────────────────────────────────────────────
+
+    private void showHelpDialog() {
+        int dp8  = Math.round(8  * getResources().getDisplayMetrics().density);
+        int dp16 = Math.round(16 * getResources().getDisplayMetrics().density);
+
+        String html =
+            "<b>Here I Am Now</b><br>"
+            + "Android GPS tracking app. Records your location continuously in the background, "
+            + "saves it to log files on the phone, and uploads them automatically to a "
+            + "Nextcloud or OwnCloud server. No Google Play Services required.<br><br>"
+
+            + "<b>How it works</b><br>"
+            + "A background service records a GPS fix every <i>Update interval</i> seconds. "
+            + "Each fix is averaged from multiple samples (see <i>Num GPS fixes</i>) to improve accuracy. "
+            + "Fixes are written to four daily log files in the phone&#39;s Documents folder. "
+            + "Files are uploaded to your Nextcloud server every <i>Upload interval</i> seconds. "
+            + "The map shows your current position as a solid blue dot and recent track history "
+            + "as smaller dots, filtered by <i>Min satellites</i> and <i>Display period</i>.<br><br>"
+
+            + "<b>Settings</b><br>"
+            + "<b>Session name</b> — Nextcloud subfolder for this device&#39;s files. "
+            + "Use a different name per device (e.g. phone1, car).<br>"
+            + "<b>Update interval</b> — How often a GPS fix is recorded. Default: 60 s.<br>"
+            + "<b>Num GPS fixes</b> — Samples averaged per log entry to improve accuracy. Default: 5.<br>"
+            + "<b>Upload interval</b> — How often files are sent to Nextcloud. Default: 300 s.<br>"
+            + "<b>Nextcloud / OwnCloud URL</b> — Base URL of your server, e.g. https://cloud.example.com<br>"
+            + "<b>Username / Password</b> — Your Nextcloud login credentials.<br>"
+            + "<b>Alert code</b> — Code used to trigger a remote alert (default: 911911).<br>"
+            + "<b>Min satellites</b> — Minimum satellites required for a fix to appear on the map trail. "
+            + "Set to 0 to show all fixes.<br>"
+            + "<b>Display period</b> — Hours of track history shown on the map. Default: 12 h.<br>"
+            + "<b>Start on bootup</b> — Start automatically when the phone switches on.<br><br>"
+
+            + "<b>Remote Alert</b><br>"
+            + "Upload a file named <i>{alert code}.mp3</i> to the Nextcloud session folder. "
+            + "At the next upload check the app downloads it, silently takes front and rear photos "
+            + "(uploaded immediately), then plays the sound 4 times at maximum volume with the "
+            + "torch flashing and phone vibrating. Tap <b>Cancel Alert</b> to stop. "
+            + "The trigger file is renamed to <i>YYYY-MM-DD-{alert code}.mp3</i> as a timestamped record.<br><br>"
+
+            + "<b>Log files</b> (Documents folder, 30-day auto-delete)<br>"
+            + "YYYY-MM-DD-hia.csv — one row per GPS fix<br>"
+            + "YYYY-MM-DD-hia.gpx — GPX 1.1 track<br>"
+            + "YYYY-MM-DD-hia.kml — KML track with waypoints<br>"
+            + "YYYY-MM-DD-hia.txt — debug and status log<br><br>"
+
+            + "<b>App updates</b><br>"
+            + "Each time Settings is opened the app checks GitHub for a newer release. "
+            + "If one is found, tap <b>Download &amp; Install</b> to update automatically.<br><br>"
+
+            + "Source: https://github.com/harrowmd/m21hereiam";
+
+        TextView tv = new TextView(this);
+        tv.setPadding(dp16, dp8, dp16, dp8);
+        tv.setTextSize(13);
+        tv.setLineSpacing(0, 1.3f);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+            tv.setText(Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY));
+        else
+            tv.setText(Html.fromHtml(html));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(tv);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Help")
+            .setView(scroll)
+            .setPositiveButton("Close", null)
             .show();
     }
 
