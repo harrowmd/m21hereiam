@@ -194,7 +194,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         layout.setPadding(dp16, dp8, dp16, dp8);
 
         Button btnHelp = new Button(this);
-        btnHelp.setText("? Help");
+        btnHelp.setText("Help");
         btnHelp.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showHelpDialog(); }
         });
@@ -400,7 +400,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "Each time Settings is opened the app checks GitHub for a newer release. "
             + "If one is found, tap <b>Download &amp; Install</b> to update automatically.<br><br>"
 
-            + "Source: https://github.com/harrowmd/m21hereiam";
+            + "Source: https://github.com/harrowmd/m21hereiam<br><br>"
+            + "<a href=\"mailto:Martin.Harrow@talk21.com\">Martin.Harrow@talk21.com</a>";
 
         TextView tv = new TextView(this);
         tv.setPadding(dp16, dp8, dp16, dp8);
@@ -414,8 +415,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(tv);
 
+        tv.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+
         new AlertDialog.Builder(this)
-            .setTitle("Help")
+            .setTitle("Here I Am Now for Nextcloud")
             .setView(scroll)
             .setPositiveButton("Close", null)
             .show();
