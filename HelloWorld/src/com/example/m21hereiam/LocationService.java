@@ -531,7 +531,7 @@ public class LocationService extends Service implements LocationListener {
                 @Override public void run() { takeAlertPhotos(photoDest, photoAuth); }
             }).start();
 
-            // Store URL/auth so cancelAlert() can delete from Nextcloud
+            // Store URL/auth so cancelAlert() can rename file on Nextcloud
             activeAlertUrl  = alertUrl;
             activeAlertAuth = auth;
             alertCancelled  = false;
@@ -624,27 +624,32 @@ public class LocationService extends Service implements LocationListener {
         activeAlertUrl  = null;
         activeAlertAuth = null;
         if (url != null && auth != null)
-            deleteFromNextcloud(url, auth, alertCode + ".mp3");
+            renameOnNextcloud(url, auth, alertCode + ".mp3");
         if (uiListener != null) uiListener.onAlertStopped();
     }
 
-    private void deleteFromNextcloud(final String url, final String auth, final String fileName) {
+    private void renameOnNextcloud(final String sourceUrl, final String auth, final String fileName) {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-                    c.setRequestMethod("DELETE");
+                    String today   = dateFmt.format(new Date());
+                    String destUrl = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1)
+                                     + enc(today + "-" + fileName);
+                    HttpURLConnection c = (HttpURLConnection) new URL(sourceUrl).openConnection();
+                    c.setRequestMethod("MOVE");
                     c.setRequestProperty("Authorization", auth);
+                    c.setRequestProperty("Destination", destUrl);
+                    c.setRequestProperty("Overwrite", "T");
                     c.setConnectTimeout(15000);
                     c.setReadTimeout(15000);
-                    int code = c.getResponseCode();
+                    int httpCode = c.getResponseCode();
                     c.disconnect();
-                    if (code < 300)
-                        writeLog("Alert: " + fileName + " deleted from Nextcloud (HTTP " + code + ")");
+                    if (httpCode < 300)
+                        writeLog("Alert: " + fileName + " renamed to " + today + "-" + fileName + " on Nextcloud (HTTP " + httpCode + ")");
                     else
-                        writeLog("Alert: DELETE " + fileName + " failed (HTTP " + code + ")");
+                        writeLog("Alert: MOVE " + fileName + " failed (HTTP " + httpCode + ")");
                 } catch (Exception e) {
-                    writeLog("Alert: DELETE " + fileName + " failed: " + e.getMessage());
+                    writeLog("Alert: MOVE " + fileName + " failed: " + e.getMessage());
                 }
             }
         }).start();
