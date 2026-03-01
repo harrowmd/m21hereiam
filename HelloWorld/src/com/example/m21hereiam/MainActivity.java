@@ -201,6 +201,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
             String.valueOf(service.updateInterval / 1000));
         layout.addView(editInterval);
 
+        layout.addView(label("Num GPS fixes (averaged per log entry)"));
+        final EditText editNumFixes = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(service.numGpsFixes));
+        layout.addView(editNumFixes);
+
         layout.addView(label("Upload interval (seconds)"));
         final EditText editUpload = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.uploadInterval / 1000));
@@ -285,6 +290,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     try { service.updateInterval =
                         Math.max(10, Integer.parseInt(editInterval.getText().toString().trim())) * 1000L; }
                     catch (NumberFormatException ignored) {}
+                    try { service.numGpsFixes =
+                        Math.max(1, Integer.parseInt(editNumFixes.getText().toString().trim())); }
+                    catch (NumberFormatException ignored) {}
                     try { service.uploadInterval =
                         Math.max(10, Integer.parseInt(editUpload.getText().toString().trim())) * 1000L; }
                     catch (NumberFormatException ignored) {}
@@ -311,6 +319,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putBoolean(LocationService.PREF_START_ON_BOOT,   service.startOnBoot)
                         .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
+                        .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters

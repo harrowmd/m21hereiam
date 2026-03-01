@@ -81,6 +81,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_START_ON_BOOT   = "start_on_boot";
     static final String PREF_MIN_SAT         = "min_sat";
     static final String PREF_DISPLAY_PERIOD  = "display_period_hours";
+    static final String PREF_NUM_GPS_FIXES   = "num_gps_fixes";
 
     private static final String[] LOG_SUFFIXES = {
         "-hereiamnow.csv", "-hereiamnow.gpx", "-hereiamnow.kml", "-hereiamnow.txt"
@@ -103,6 +104,10 @@ public class LocationService extends Service implements LocationListener {
     boolean startOnBoot        = true;
     int     minSat             = 4;
     int     displayPeriodHours = 12;
+    int     numGpsFixes        = 5;
+
+    // Rolling buffer of recent GPS fixes for averaging: {lat, lon, alt, accuracy}
+    private final java.util.List<double[]> fixBuffer = new java.util.ArrayList<>();
 
     // ── Current sensor values ─────────────────────────────────────────────────
     double csvLat        = 0;
@@ -159,9 +164,14 @@ public class LocationService extends Service implements LocationListener {
 
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
-            saveToCsv();
-            saveToGpx();
-            saveToKml();
+            if (hasLocation) {
+                double[] avg = computeAveragedPosition();
+                saveToCsv(avg);
+                saveToGpx(avg);
+                saveToKml(avg);
+            } else {
+                writeLog("Log tick: no GPS fix yet, skipping");
+            }
             logHandler.postDelayed(this, updateInterval);
         }
     };
@@ -268,9 +278,11 @@ public class LocationService extends Service implements LocationListener {
         startOnBoot        = p.getBoolean(PREF_START_ON_BOOT, true);
         minSat             = p.getInt    (PREF_MIN_SAT,        4);
         displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
+        numGpsFixes        = p.getInt    (PREF_NUM_GPS_FIXES,  5);
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
+            + " numGpsFixes=" + numGpsFixes
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 
@@ -296,11 +308,14 @@ public class LocationService extends Service implements LocationListener {
             return;
         }
         try {
+            // Sample more frequently when averaging multiple fixes
+            long gpsInterval = (numGpsFixes > 1) ? Math.min(updateInterval, 5_000L) : updateInterval;
             locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, updateInterval, 0, this);
+                LocationManager.GPS_PROVIDER, gpsInterval, 0, this);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
                 locationManager.registerGnssStatusCallback(gnssCallback);
-            writeLog("Requesting GPS updates every " + (updateInterval/1000) + "s");
+            writeLog("Requesting GPS updates every " + (gpsInterval/1000) + "s"
+                + " (averaging " + numGpsFixes + " fixes)");
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last == null)
                 last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
@@ -321,6 +336,9 @@ public class LocationService extends Service implements LocationListener {
         csvLon      = loc.getLongitude();
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
+        // Rolling fix buffer for averaging
+        if (fixBuffer.size() >= Math.max(numGpsFixes, 1)) fixBuffer.remove(0);
+        fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
         if (!hasLocation) {
             hasLocation = true;
             writeLog("First GPS fix received");
@@ -788,8 +806,52 @@ public class LocationService extends Service implements LocationListener {
 
     // ── CSV / GPX / KML saving ────────────────────────────────────────────────
 
-    private void saveToCsv() {
-        if (!hasLocation) { writeLog("Log tick: no GPS fix yet, skipping"); return; }
+    /** Average the fix buffer, removing outliers beyond 2 std devs from centroid. */
+    private double[] computeAveragedPosition() {
+        int n = fixBuffer.size();
+        if (n == 0) return new double[]{csvLat, csvLon, csvAlt, csvAccuracy};
+        if (n == 1) return new double[]{fixBuffer.get(0)[0], fixBuffer.get(0)[1],
+                                        fixBuffer.get(0)[2], fixBuffer.get(0)[3]};
+
+        // Centroid
+        double meanLat = 0, meanLon = 0;
+        for (double[] f : fixBuffer) { meanLat += f[0]; meanLon += f[1]; }
+        meanLat /= n; meanLon /= n;
+
+        // Distance of each fix from centroid
+        double[] dists = new double[n];
+        double meanDist = 0;
+        for (int i = 0; i < n; i++) {
+            double dlat = fixBuffer.get(i)[0] - meanLat;
+            double dlon = fixBuffer.get(i)[1] - meanLon;
+            dists[i] = Math.sqrt(dlat * dlat + dlon * dlon);
+            meanDist += dists[i];
+        }
+        meanDist /= n;
+
+        // Standard deviation of distances
+        double var = 0;
+        for (double d : dists) var += (d - meanDist) * (d - meanDist);
+        double stdDev = Math.sqrt(var / n);
+        double threshold = meanDist + 2 * stdDev;
+
+        // Keep fixes within threshold
+        java.util.List<double[]> kept = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++)
+            if (dists[i] <= threshold) kept.add(fixBuffer.get(i));
+        if (kept.isEmpty()) kept = new java.util.ArrayList<>(fixBuffer);
+
+        // Average kept fixes
+        double lat = 0, lon = 0, alt = 0, acc = 0;
+        for (double[] f : kept) { lat += f[0]; lon += f[1]; alt += f[2]; acc += f[3]; }
+        int k = kept.size();
+        writeLog(String.format(Locale.US,
+            "GPS avg: %d/%d fixes kept, lat=%.6f lon=%.6f acc=%.1fm",
+            k, n, lat/k, lon/k, acc/k));
+        return new double[]{lat / k, lon / k, alt / k, acc / k};
+    }
+
+    private void saveToCsv(double[] avg) {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.csv");
@@ -800,7 +862,7 @@ public class LocationService extends Service implements LocationListener {
                 fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct\n");
             fw.write(String.format(Locale.US, "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
                 tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
-                csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
+                avg[0], avg[1], avg[2], avg[3], csvSatellites, csvBattery));
             fw.close();
             writeLog("Saved CSV: " + file.getName() + " (" + file.length() + " bytes)");
         } catch (IOException e) {
@@ -809,8 +871,7 @@ public class LocationService extends Service implements LocationListener {
         deleteOldFiles(dir, "-hereiamnow.csv");
     }
 
-    private void saveToGpx() {
-        if (!hasLocation) return;
+    private void saveToGpx(double[] avg) {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hereiamnow.gpx");
@@ -832,7 +893,7 @@ public class LocationService extends Service implements LocationListener {
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US,
                 "      <trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele><time>%s</time><sat>%d</sat></trkpt>\n",
-                csvLat, csvLon, csvAlt, isoFmt.format(now), csvSatellites));
+                avg[0], avg[1], avg[2], isoFmt.format(now), csvSatellites));
             fw.write(GPX_CLOSE);
             fw.close();
         } catch (IOException e) {
@@ -841,8 +902,7 @@ public class LocationService extends Service implements LocationListener {
         deleteOldFiles(dir, "-hereiamnow.gpx");
     }
 
-    private void saveToKml() {
-        if (!hasLocation) return;
+    private void saveToKml(double[] avg) {
         File   dir   = docsDir();
         Date   now   = new Date();
         String today = dateFmt.format(now);
@@ -860,7 +920,7 @@ public class LocationService extends Service implements LocationListener {
         }
 
         kmlTimestamps.add(tsFmt.format(now));
-        kmlLatLon.add(new double[]{csvLat, csvLon});
+        kmlLatLon.add(new double[]{avg[0], avg[1]}); // averaged lat, lon
 
         try {
             FileWriter fw = new FileWriter(file, false); // overwrite each time
