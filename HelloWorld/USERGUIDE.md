@@ -149,6 +149,15 @@ For example, with the default setting only fixes from the last 12 hours are
 shown on the map. Increase this to see a longer history. Changing this
 setting and tapping **Save** updates the map immediately.
 
+### Num GPS fixes
+How many GPS samples to collect and average for each logged position.
+Default: `5`
+
+When set to more than 1, the app samples GPS every 5 seconds, collects
+the requested number of fixes, removes statistical outliers, and logs
+the averaged position. This improves accuracy compared to using a single
+raw fix. Set to `1` to disable averaging and log each fix immediately.
+
 ### Start on bootup
 When ticked (default), the app starts automatically when the phone is
 switched on. No manual launch is needed.
