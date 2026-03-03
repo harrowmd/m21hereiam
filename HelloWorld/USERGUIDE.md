@@ -71,12 +71,17 @@ current coordinates. This keeps the background service alive.
 A semi-transparent bar at the bottom of the screen shows live sensor data,
 updated every second:
 
-| Left column | Right column |
-|-------------|--------------|
-| Date | Latitude |
-| Time | Longitude |
-| Battery % | Altitude (m) |
-| Satellites in fix | Accuracy (m) |
+| Left column | Centre column | Right column (right-justified) |
+|-------------|---------------|-------------------------------|
+| Date (`yyyy-mm-dd`) | Latitude | "What3Words" |
+| Time (`HH:mm:ss`) | Longitude | word 1 |
+| Battery % | Altitude (m) | word 2 |
+| Satellites in fix | Accuracy (m) | word 3 |
+
+The **What3Words** column shows the three-word address for the most recently
+logged GPS fix. It is updated at each **Update interval** after the averaged
+position is calculated. It may show `--` until the first fix is logged or
+while a lookup is in progress.
 
 ---
 
@@ -198,10 +203,10 @@ folder (`Internal Storage / Documents`):
 
 | File | Format | Contents |
 |------|--------|----------|
-| `YYYY-MM-DD-hia.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery |
+| `YYYY-MM-DD-hia.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery, What3Words link |
 | `YYYY-MM-DD-hia.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
 | `YYYY-MM-DD-hia.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
-| `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log |
+| `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log, including What3Words lookup results |
 
 Files roll over at midnight. Files older than **30 days** are deleted
 automatically.
@@ -209,9 +214,13 @@ automatically.
 ### CSV format
 
 ```
-timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct
-2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,6,100
+timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct,what3words
+2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,6,100,https://w3w.co/word1.word2.word3
 ```
+
+The `what3words` column contains a clickable link in the format
+`https://w3w.co/word1.word2.word3`. The cell is empty if the lookup failed
+or has not yet completed for that fix.
 
 ### GPX format
 
@@ -226,6 +235,29 @@ Each GPS fix is written as both:
   as a waypoint/POI by apps such as Magic Earth.
 - A **`<LineString>` track** connecting all fixes for the day — displayed as
   a route line in Google Earth and other KML viewers.
+
+### What3Words in the TXT log
+
+After each averaged GPS fix the app looks up the What3Words address for that
+location and records the result in the debug log:
+
+```
+W3W: looking up 51.444040,0.143970
+W3W: https://w3w.co/word1.word2.word3
+```
+
+If the lookup fails, the reason is logged and the app backs off automatically
+before retrying:
+
+```
+W3W: HTTP 503 — backing off
+W3W: will retry after 4 tick(s) (240s)
+W3W: backing off (3 tick(s) remaining)
+```
+
+The backoff doubles after each consecutive failure (2 → 4 → 8 → 16 ticks,
+capped at 16). It resets automatically on success or when **Save** is tapped
+in Settings.
 
 ---
 
