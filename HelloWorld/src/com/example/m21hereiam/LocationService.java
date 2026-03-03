@@ -82,6 +82,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_MIN_SAT         = "min_sat";
     static final String PREF_DISPLAY_PERIOD  = "display_period_hours";
     static final String PREF_NUM_GPS_FIXES   = "num_gps_fixes";
+    static final String PREF_W3W_KEY         = "w3w_api_key";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -105,6 +106,8 @@ public class LocationService extends Service implements LocationListener {
     int     minSat             = 4;
     int     displayPeriodHours = 12;
     int     numGpsFixes        = 5;
+    String  w3wApiKey          = "";
+    volatile String w3wAddress = "";
 
     // Rolling buffer of recent GPS fixes for averaging: {lat, lon, alt, accuracy}
     private final java.util.List<double[]> fixBuffer = new java.util.ArrayList<>();
@@ -124,6 +127,7 @@ public class LocationService extends Service implements LocationListener {
         void onBatteryUpdate(int pct);
         void onAlertStarted();
         void onAlertStopped();
+        void onW3wUpdate(String words);
     }
 
     private Listener uiListener;
@@ -165,10 +169,23 @@ public class LocationService extends Service implements LocationListener {
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
             if (hasLocation) {
-                double[] avg = computeAveragedPosition();
-                saveToCsv(avg);
-                saveToGpx(avg);
-                saveToKml(avg);
+                final double[] avg = computeAveragedPosition();
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        String w3w;
+                        if (w3wApiKey == null || w3wApiKey.isEmpty()) {
+                            writeLog("W3W: API key not configured");
+                            w3w = "";
+                        } else {
+                            w3w = lookupW3W(avg[0], avg[1]);
+                        }
+                        w3wAddress = w3w;
+                        if (!w3w.isEmpty() && uiListener != null) uiListener.onW3wUpdate(w3w);
+                        saveToCsv(avg, w3w);
+                        saveToGpx(avg);
+                        saveToKml(avg);
+                    }
+                }).start();
             } else {
                 writeLog("Log tick: no GPS fix yet, skipping");
             }
@@ -279,6 +296,7 @@ public class LocationService extends Service implements LocationListener {
         minSat             = p.getInt    (PREF_MIN_SAT,        4);
         displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
         numGpsFixes        = p.getInt    (PREF_NUM_GPS_FIXES,  5);
+        w3wApiKey          = p.getString (PREF_W3W_KEY,         "");
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
@@ -881,7 +899,7 @@ public class LocationService extends Service implements LocationListener {
         return new double[]{lat / k, lon / k, alt / k, acc / k};
     }
 
-    private void saveToCsv(double[] avg) {
+    private void saveToCsv(double[] avg, String w3w) {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hia.csv");
@@ -889,10 +907,11 @@ public class LocationService extends Service implements LocationListener {
         try {
             FileWriter fw = new FileWriter(file, true);
             if (isNew)
-                fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct\n");
-            fw.write(String.format(Locale.US, "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d\n",
+                fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct,what3words\n");
+            String w3wUrl = w3w.isEmpty() ? "" : "https://w3w.co/" + w3w;
+            fw.write(String.format(Locale.US, "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d,%s\n",
                 tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
-                avg[0], avg[1], avg[2], avg[3], csvSatellites, csvBattery));
+                avg[0], avg[1], avg[2], avg[3], csvSatellites, csvBattery, w3wUrl));
             fw.close();
             writeLog("Saved CSV: " + file.getName() + " (" + file.length() + " bytes)");
         } catch (IOException e) {
@@ -1009,6 +1028,53 @@ public class LocationService extends Service implements LocationListener {
         } catch (IOException e) {
             writeLog("KML reload error: " + e.getMessage());
         }
+    }
+
+    // ── What3Words lookup ─────────────────────────────────────────────────────
+
+    private String lookupW3W(double lat, double lon) {
+        writeLog(String.format(Locale.US, "W3W: looking up %.6f,%.6f", lat, lon));
+        try {
+            String urlStr = "https://api.what3words.com/v3/convert-to-3wa?coordinates="
+                + String.format(Locale.US, "%.6f,%.6f", lat, lon)
+                + "&key=" + URLEncoder.encode(w3wApiKey, "UTF-8");
+            HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(10000);
+            int code = c.getResponseCode();
+            if (code != 200) {
+                c.disconnect();
+                writeLog("W3W: lookup failed HTTP " + code
+                    + " (check API key is valid)");
+                return "";
+            }
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(c.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+            c.disconnect();
+            String words = extractW3wWords(sb.toString());
+            if (words == null) {
+                writeLog("W3W: parse failed, response=" + sb.toString());
+                return "";
+            }
+            writeLog("W3W: https://w3w.co/" + words);
+            return words;
+        } catch (Exception e) {
+            writeLog("W3W: lookup error: " + e.getMessage());
+            return "";
+        }
+    }
+
+    private String extractW3wWords(String json) {
+        String search = "\"words\":\"";
+        int start = json.indexOf(search);
+        if (start < 0) return null;
+        start += search.length();
+        int end = json.indexOf("\"", start);
+        return end < 0 ? null : json.substring(start, end);
     }
 
     // ── File helpers ──────────────────────────────────────────────────────────

@@ -65,13 +65,13 @@
             <TextView android:id="@+id/tv_date"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Date: --"
+                android:text="--"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_time"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Time: --"
+                android:text="--"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_battery"
@@ -119,6 +119,44 @@
                 android:text="Accuracy: --"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="end">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="What3Words"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:gravity="end" />
+            <TextView android:id="@+id/tv_w3w_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="--"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:gravity="end" />
+            <TextView android:id="@+id/tv_w3w_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="--"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:gravity="end" />
+            <TextView android:id="@+id/tv_w3w_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="--"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:gravity="end" />
 
         </LinearLayout>
 

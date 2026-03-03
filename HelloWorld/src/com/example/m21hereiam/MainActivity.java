@@ -40,6 +40,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
+    private TextView tvW3w1, tvW3w2, tvW3w3;
     private Button   btnCancelAlert;
 
     // ── Service binding ───────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             // Restore Cancel Alert button if alert was already active
             if (service.alertActive)
                 btnCancelAlert.setVisibility(View.VISIBLE);
+            if (!service.w3wAddress.isEmpty()) onW3wUpdate(service.w3wAddress);
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             bound   = false;
@@ -75,8 +77,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
             Date now = new Date();
-            tvDate.setText("Date: " + dateFmt.format(now));
-            tvTime.setText("Time: " + timeFmt.format(now));
+            tvDate.setText(dateFmt.format(now));
+            tvTime.setText(timeFmt.format(now));
             clockHandler.postDelayed(this, 1000);
         }
     };
@@ -97,6 +99,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvBattery    = (TextView) findViewById(R.id.tv_battery);
         tvDate       = (TextView) findViewById(R.id.tv_date);
         tvTime       = (TextView) findViewById(R.id.tv_time);
+        tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
+        tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
+        tvW3w3       = (TextView) findViewById(R.id.tv_w3w_3);
 
         ((Button) findViewById(R.id.btn_recentre)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { mapView.recentre(); }
@@ -181,6 +186,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
         });
     }
 
+    @Override
+    public void onW3wUpdate(final String words) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                String[] parts = words.split("\\.");
+                tvW3w1.setText(parts.length > 0 ? parts[0] : "--");
+                tvW3w2.setText(parts.length > 1 ? parts[1] : "--");
+                tvW3w3.setText(parts.length > 2 ? parts[2] : "--");
+            }
+        });
+    }
+
     // ── Settings dialog ───────────────────────────────────────────────────────
 
     private void showSettingsDialog() {
@@ -262,6 +279,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
+        layout.addView(label("What3Words API key"));
+        final EditText editW3wKey = editText(InputType.TYPE_CLASS_TEXT, service.w3wApiKey);
+        layout.addView(editW3wKey);
+
         layout.addView(label("Min satellites for map display"));
         final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.minSat));
@@ -331,6 +352,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
                     service.alertCode    = editAlertCode.getText().toString().trim();
+                    service.w3wApiKey    = editW3wKey.getText().toString().trim();
                     service.startOnBoot  = checkBoot.isChecked();
                     try { service.minSat =
                         Math.max(0, Integer.parseInt(editMinSat.getText().toString().trim())); }
@@ -351,6 +373,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
                         .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
+                        .putString (LocationService.PREF_W3W_KEY,         service.w3wApiKey)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters
