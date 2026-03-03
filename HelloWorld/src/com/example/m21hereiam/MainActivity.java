@@ -279,10 +279,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
-        layout.addView(label("What3Words API key"));
-        final EditText editW3wKey = editText(InputType.TYPE_CLASS_TEXT, service.w3wApiKey);
-        layout.addView(editW3wKey);
-
         layout.addView(label("Min satellites for map display"));
         final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.minSat));
@@ -352,7 +348,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
                     service.alertCode    = editAlertCode.getText().toString().trim();
-                    service.w3wApiKey       = editW3wKey.getText().toString().trim();
                     service.w3wBackoffTicks = 0; // allow immediate retry after settings saved
                     service.w3wFailCount    = 0;
                     service.startOnBoot  = checkBoot.isChecked();
@@ -375,7 +370,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
                         .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
-                        .putString (LocationService.PREF_W3W_KEY,         service.w3wApiKey)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters
