@@ -108,6 +108,8 @@ public class LocationService extends Service implements LocationListener {
     int     numGpsFixes        = 5;
     String  w3wApiKey          = "";
     volatile String w3wAddress = "";
+    volatile int w3wBackoffTicks = 0;  // ticks to skip before next attempt
+    volatile int w3wFailCount    = 0;  // consecutive failures; reset on success
 
     // Rolling buffer of recent GPS fixes for averaging: {lat, lon, alt, accuracy}
     private final java.util.List<double[]> fixBuffer = new java.util.ArrayList<>();
@@ -173,8 +175,9 @@ public class LocationService extends Service implements LocationListener {
                 new Thread(new Runnable() {
                     @Override public void run() {
                         String w3w;
-                        if (w3wApiKey == null || w3wApiKey.isEmpty()) {
-                            writeLog("W3W: API key not configured");
+                        if (w3wBackoffTicks > 0) {
+                            w3wBackoffTicks--;
+                            writeLog("W3W: backing off (" + w3wBackoffTicks + " tick(s) remaining)");
                             w3w = "";
                         } else {
                             w3w = lookupW3W(avg[0], avg[1]);
@@ -1030,51 +1033,85 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
-    // ── What3Words lookup ─────────────────────────────────────────────────────
+    // ── What3Words lookup (web scrape) ────────────────────────────────────────
 
     private String lookupW3W(double lat, double lon) {
         writeLog(String.format(Locale.US, "W3W: looking up %.6f,%.6f", lat, lon));
         try {
-            String urlStr = "https://api.what3words.com/v3/convert-to-3wa?coordinates="
-                + String.format(Locale.US, "%.6f,%.6f", lat, lon)
-                + "&key=" + URLEncoder.encode(w3wApiKey, "UTF-8");
+            String urlStr = String.format(Locale.US,
+                "https://what3words.com/%.6f,%.6f", lat, lon);
             HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(10000);
+            c.setInstanceFollowRedirects(true);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
+            c.setRequestProperty("Accept", "text/html");
+            c.setRequestProperty("Accept-Language", "en");
             int code = c.getResponseCode();
             if (code != 200) {
                 c.disconnect();
-                writeLog("W3W: lookup failed HTTP " + code
-                    + " (check API key is valid)");
+                writeLog("W3W: HTTP " + code + " — backing off");
+                applyW3wBackoff();
                 return "";
             }
             java.io.BufferedReader br = new java.io.BufferedReader(
-                new java.io.InputStreamReader(c.getInputStream()));
+                new java.io.InputStreamReader(c.getInputStream(), "UTF-8"));
             StringBuilder sb = new StringBuilder();
             String line;
-            while ((line = br.readLine()) != null) sb.append(line);
+            while ((line = br.readLine()) != null) {
+                sb.append(line);
+                if (sb.indexOf("og:title") >= 0) break; // found what we need
+                if (sb.length() > 65536) break;         // safety limit
+            }
             br.close();
             c.disconnect();
-            String words = extractW3wWords(sb.toString());
+            String words = extractW3wFromHtml(sb.toString());
             if (words == null) {
-                writeLog("W3W: parse failed, response=" + sb.toString());
+                writeLog("W3W: could not parse og:title from response — backing off");
+                applyW3wBackoff();
                 return "";
             }
+            w3wFailCount    = 0;
+            w3wBackoffTicks = 0;
             writeLog("W3W: https://w3w.co/" + words);
             return words;
         } catch (Exception e) {
-            writeLog("W3W: lookup error: " + e.getMessage());
+            writeLog("W3W: error: " + e.getMessage() + " — backing off");
+            applyW3wBackoff();
             return "";
         }
     }
 
-    private String extractW3wWords(String json) {
-        String search = "\"words\":\"";
-        int start = json.indexOf(search);
-        if (start < 0) return null;
-        start += search.length();
-        int end = json.indexOf("\"", start);
-        return end < 0 ? null : json.substring(start, end);
+    private void applyW3wBackoff() {
+        w3wFailCount++;
+        // Exponential backoff: 2, 4, 8, 16 ticks (capped at 16)
+        int skip = Math.min(2 << (w3wFailCount - 1), 16);
+        w3wBackoffTicks = skip;
+        writeLog("W3W: will retry after " + skip + " tick(s) ("
+            + skip * (updateInterval / 1000) + "s)");
+    }
+
+    private String extractW3wFromHtml(String html) {
+        // Find the chunk containing og:title
+        int idx = html.indexOf("og:title");
+        if (idx < 0) return null;
+        // Find content=" within the same meta tag (up to closing >)
+        int tagEnd = html.indexOf(">", idx);
+        String tag = (tagEnd > idx) ? html.substring(idx, tagEnd) : html.substring(idx);
+        int contentIdx = tag.indexOf("content=\"");
+        if (contentIdx < 0) return null;
+        contentIdx += "content=\"".length();
+        int end = tag.indexOf("\"", contentIdx);
+        if (end < 0) return null;
+        String value = tag.substring(contentIdx, end).trim();
+        // Strip leading slashes (e.g. "///word.word.word" → "word.word.word")
+        int start = 0;
+        while (start < value.length() && value.charAt(start) == '/') start++;
+        value = value.substring(start).trim();
+        // Validate: must be word.word.word (lowercase letters only)
+        if (!value.matches("[a-z]+\\.[a-z]+\\.[a-z]+")) return null;
+        return value;
     }
 
     // ── File helpers ──────────────────────────────────────────────────────────

@@ -352,7 +352,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
                     service.alertCode    = editAlertCode.getText().toString().trim();
-                    service.w3wApiKey    = editW3wKey.getText().toString().trim();
+                    service.w3wApiKey       = editW3wKey.getText().toString().trim();
+                    service.w3wBackoffTicks = 0; // allow immediate retry after settings saved
+                    service.w3wFailCount    = 0;
                     service.startOnBoot  = checkBoot.isChecked();
                     try { service.minSat =
                         Math.max(0, Integer.parseInt(editMinSat.getText().toString().trim())); }
