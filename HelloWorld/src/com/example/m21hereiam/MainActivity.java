@@ -359,6 +359,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     try { service.uploadInterval =
                         Math.max(10, Integer.parseInt(editUpload.getText().toString().trim())) * 1000L; }
                     catch (NumberFormatException ignored) {}
+                    if (service.uploadInterval < service.updateInterval) {
+                        service.uploadInterval = service.updateInterval;
+                        android.widget.Toast.makeText(MainActivity.this,
+                            "Upload interval must be \u2265 update interval — set to "
+                                + (service.uploadInterval / 1000) + "s",
+                            android.widget.Toast.LENGTH_LONG).show();
+                    }
                     service.nextcloudUrl  = editUrl.getText().toString().trim();
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();

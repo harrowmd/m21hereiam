@@ -146,6 +146,7 @@ public class LocationService extends Service implements LocationListener {
     // ── Internals ─────────────────────────────────────────────────────────────
     private final Handler logHandler    = new Handler();
     private final Handler uploadHandler = new Handler();
+    private final Handler gpsHandler    = new Handler();
     private boolean timersStarted = false;
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
@@ -168,10 +169,31 @@ public class LocationService extends Service implements LocationListener {
         isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
     }
 
+    private final Runnable gpsRestart = new Runnable() {
+        @Override public void run() {
+            writeLog("GPS duty cycle: restarting for next fix window");
+            startLocationUpdates();
+        }
+    };
+
+    private void scheduleGpsDutyCycle() {
+        if (numGpsFixes <= 1) return; // GPS already fires at updateInterval; no gain
+        long gpsInterval  = Math.min(updateInterval, 5_000L);
+        long gpsOnNeeded  = numGpsFixes * gpsInterval + 5_000L; // fixes + 5s buffer
+        long gpsOffTime   = updateInterval - gpsOnNeeded;
+        if (gpsOffTime < 15_000L) return; // not worth cycling (saves < 15s)
+        try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
+        writeLog(String.format("GPS duty cycle: off for %ds, on for %ds per %ds interval",
+            gpsOffTime / 1000, gpsOnNeeded / 1000, updateInterval / 1000));
+        gpsHandler.removeCallbacks(gpsRestart);
+        gpsHandler.postDelayed(gpsRestart, gpsOffTime);
+    }
+
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
             if (hasLocation) {
                 final double[] avg = computeAveragedPosition();
+                scheduleGpsDutyCycle();
                 new Thread(new Runnable() {
                     @Override public void run() {
                         String w3w;
@@ -278,6 +300,7 @@ public class LocationService extends Service implements LocationListener {
         super.onDestroy();
         logHandler.removeCallbacks(logTick);
         uploadHandler.removeCallbacks(uploadTick);
+        gpsHandler.removeCallbacks(gpsRestart);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
@@ -311,6 +334,7 @@ public class LocationService extends Service implements LocationListener {
         writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
+        gpsHandler.removeCallbacks(gpsRestart);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
         logHandler.removeCallbacks(logTick);
