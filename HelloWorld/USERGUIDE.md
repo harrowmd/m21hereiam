@@ -83,6 +83,10 @@ logged GPS fix. It is updated at each **Update interval** after the averaged
 position is calculated. It may show `--` until the first fix is logged or
 while a lookup is in progress.
 
+When a What3Words address is shown the three words turn **light blue**.
+Tapping anywhere on the What3Words column opens
+`https://w3w.co/word1.word2.word3` in the default web browser.
+
 ---
 
 ## 4. Map Controls
@@ -126,6 +130,10 @@ Default: `60` seconds. Minimum: `10` seconds.
 How often the app uploads the log files to Nextcloud.
 Default: `300` seconds (5 minutes). Minimum: `10` seconds.
 
+The upload interval must be greater than or equal to the update interval.
+If a smaller value is entered, it is automatically raised to match the
+update interval when **Save** is tapped and a notification is shown.
+
 ### Nextcloud / OwnCloud URL
 The base URL of your Nextcloud or OwnCloud server.
 Example: `https://cloud.example.com`
@@ -162,6 +170,12 @@ When set to more than 1, the app samples GPS every 5 seconds, collects
 the requested number of fixes, removes statistical outliers, and logs
 the averaged position. This improves accuracy compared to using a single
 raw fix. Set to `1` to disable averaging and log each fix immediately.
+
+The GPS receiver is automatically duty-cycled to save battery: it is
+switched off after each log tick and restarted only shortly before the
+next tick is due. With default settings (60 s interval, 5 fixes) the
+GPS is active for approximately 30 s and off for 30 s, saving around
+50 % of GPS battery consumption compared to running continuously.
 
 ### Start on bootup
 When ticked (default), the app starts automatically when the phone is
@@ -378,6 +392,23 @@ The app runs as an Android **foreground service**. This means:
   required by Android to keep background services running reliably.
 - If the service is killed by the system (e.g. low memory), Android
   restarts it automatically (`START_STICKY`).
+- As a foreground service it is exempt from Android Doze mode
+  restrictions — GPS and network access continue to work normally even
+  when the phone is stationary with the screen off.
+
+### Battery efficiency
+
+The app is designed to minimise battery use between log ticks:
+
+- The CPU sleeps between Handler callbacks — there are no spin loops.
+- **GPS duty cycling**: when **Num GPS fixes** is greater than 1, the
+  GPS receiver is turned off after each log tick and restarted only
+  when fixes are needed for the next tick. This significantly reduces
+  GPS on-time (see [Num GPS fixes](#num-gps-fixes) for details).
+- When **Num GPS fixes** is 1, the GPS is requested at the full update
+  interval, so the chip duty-cycles itself at the OS level.
+- Nextcloud uploads and What3Words lookups run on background threads
+  and do not block the main service loop.
 
 You can safely leave the app running continuously for days or weeks.
 
