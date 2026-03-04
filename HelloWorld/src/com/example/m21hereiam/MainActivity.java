@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.net.Uri;
 import android.content.ServiceConnection;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -41,6 +42,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
     private MapView  mapView;
     private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
     private TextView tvW3w1, tvW3w2, tvW3w3;
+    private LinearLayout llW3w;
     private Button   btnCancelAlert;
 
     // ── Service binding ───────────────────────────────────────────────────────
@@ -102,6 +104,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
         tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
         tvW3w3       = (TextView) findViewById(R.id.tv_w3w_3);
+        llW3w        = (LinearLayout) findViewById(R.id.ll_w3w);
 
         ((Button) findViewById(R.id.btn_recentre)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { mapView.recentre(); }
@@ -194,6 +197,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 tvW3w1.setText(parts.length > 0 ? parts[0] : "--");
                 tvW3w2.setText(parts.length > 1 ? parts[1] : "--");
                 tvW3w3.setText(parts.length > 2 ? parts[2] : "--");
+                // Tint words light blue to indicate they are tappable
+                int linkColour = 0xFF64B5F6;
+                tvW3w1.setTextColor(linkColour);
+                tvW3w2.setTextColor(linkColour);
+                tvW3w3.setTextColor(linkColour);
+                // Open https://w3w.co/word1.word2.word3 in browser on tap
+                final String url = "https://w3w.co/" + words;
+                llW3w.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                    }
+                });
             }
         });
     }
