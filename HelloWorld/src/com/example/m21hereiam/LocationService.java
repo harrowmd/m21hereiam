@@ -929,13 +929,26 @@ public class LocationService extends Service implements LocationListener {
             if (dists[i] <= threshold) kept.add(fixBuffer.get(i));
         if (kept.isEmpty()) kept = new java.util.ArrayList<>(fixBuffer);
 
+        // Altitude outlier rejection within kept fixes (same 2-std-dev approach)
+        double meanAlt = 0;
+        for (double[] f : kept) meanAlt += f[2];
+        meanAlt /= kept.size();
+        double altVar = 0;
+        for (double[] f : kept) altVar += (f[2] - meanAlt) * (f[2] - meanAlt);
+        double altStd  = Math.sqrt(altVar / kept.size());
+        double altThreshold = 2 * altStd;
+        java.util.List<double[]> keptAlt = new java.util.ArrayList<>();
+        for (double[] f : kept)
+            if (Math.abs(f[2] - meanAlt) <= altThreshold) keptAlt.add(f);
+        if (keptAlt.isEmpty()) keptAlt = kept;
+
         // Average kept fixes
         double lat = 0, lon = 0, alt = 0, acc = 0;
-        for (double[] f : kept) { lat += f[0]; lon += f[1]; alt += f[2]; acc += f[3]; }
-        int k = kept.size();
+        for (double[] f : keptAlt) { lat += f[0]; lon += f[1]; alt += f[2]; acc += f[3]; }
+        int k = keptAlt.size();
         writeLog(String.format(Locale.US,
-            "GPS avg: %d/%d fixes kept, lat=%.6f lon=%.6f acc=%.1fm",
-            k, n, lat/k, lon/k, acc/k));
+            "GPS avg: %d/%d fixes kept (alt filter: %d/%d), lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm",
+            kept.size(), n, k, kept.size(), lat/k, lon/k, alt/k, acc/k));
         return new double[]{lat / k, lon / k, alt / k, acc / k};
     }
 
@@ -1102,6 +1115,10 @@ public class LocationService extends Service implements LocationListener {
         return total;
     }
 
+    // Minimum altitude gain per step counted toward lap ascent.
+    // Filters GPS altitude noise (typically ±5–15 m even after averaging).
+    private static final double MIN_ASCENT_STEP_M = 5.0;
+
     private double computeLapAscent() {
         long cutoff = System.currentTimeMillis() - displayPeriodHours * 3600_000L;
         double total = 0;
@@ -1111,8 +1128,17 @@ public class LocationService extends Service implements LocationListener {
                 Date ts = tsFmt.parse(kmlTimestamps.get(i));
                 if (ts == null || ts.getTime() < cutoff) continue;
                 double alt = lapAltitudes.get(i);
-                if (prevAlt != null && alt > prevAlt) total += alt - prevAlt;
-                prevAlt = alt;
+                if (prevAlt != null) {
+                    double gain = alt - prevAlt;
+                    if (gain >= MIN_ASCENT_STEP_M) {
+                        total += gain;
+                        prevAlt = alt; // only advance baseline on a counted step
+                    } else if (alt < prevAlt) {
+                        prevAlt = alt; // track descents so we don't re-count the same climb
+                    }
+                } else {
+                    prevAlt = alt;
+                }
             } catch (Exception ignored) {}
         }
         return total;
