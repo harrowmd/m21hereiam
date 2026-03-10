@@ -55,6 +55,8 @@ public class MapView extends View {
     private final Paint placeholderPaint = new Paint();
     private final Paint dotFill          = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint trackDotPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint trackLinePaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private int         trackLineColor   = 0; // 0 = no line (None)
 
     private final RectF tileRect = new RectF();
 
@@ -81,6 +83,22 @@ public class MapView extends View {
         trackDotPaint.setColor(Color.parseColor("#2979FF"));
         trackDotPaint.setStyle(Paint.Style.FILL);
         trackDotPaint.setAlpha(180);
+
+        trackLinePaint.setStyle(Paint.Style.STROKE);
+        trackLinePaint.setStrokeWidth(2f);
+        trackLinePaint.setAlpha(180);
+    }
+
+    /** Set the track line colour. Accepted values: "Blue","Red","Yellow","Black","None". */
+    public void setTrackColour(String colour) {
+        switch (colour) {
+            case "Blue":   trackLineColor = Color.parseColor("#2979FF"); break;
+            case "Red":    trackLineColor = Color.parseColor("#FF0000"); break;
+            case "Yellow": trackLineColor = Color.parseColor("#FFFF00"); break;
+            case "Black":  trackLineColor = Color.BLACK;                 break;
+            default:       trackLineColor = 0;                           break;
+        }
+        postInvalidate();
     }
 
     /** Replace the track history shown on the map. Call from any thread. */
@@ -311,8 +329,24 @@ public class MapView extends View {
             }
         }
 
-        // Track history dots
+        // Track history: line then dots
         List<double[]> pts = trackPoints;
+        if (trackLineColor != 0 && pts.size() >= 2) {
+            trackLinePaint.setColor(trackLineColor);
+            float prevSx = Float.NaN, prevSy = Float.NaN;
+            for (double[] pt : pts) {
+                float ptx = (float) ((tileX(pt[1], zoom) + pixelXInTile(pt[1], zoom) / TILE_SIZE)
+                                      - (cx + (double) px / scaledTile));
+                float pty = (float) ((tileY(pt[0], zoom) + pixelYInTile(pt[0], zoom) / TILE_SIZE)
+                                      - (cy + (double) py / scaledTile));
+                float sx = W / 2f + ptx * scaledTile;
+                float sy = H / 2f + pty * scaledTile;
+                if (!Float.isNaN(prevSx))
+                    canvas.drawLine(prevSx, prevSy, sx, sy, trackLinePaint);
+                prevSx = sx;
+                prevSy = sy;
+            }
+        }
         for (double[] pt : pts) {
             float ptx = (float) ((tileX(pt[1], zoom) + pixelXInTile(pt[1], zoom) / TILE_SIZE)
                                   - (cx + (double) px / scaledTile));

@@ -83,6 +83,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_DISPLAY_PERIOD  = "display_period_hours";
     static final String PREF_NUM_GPS_FIXES   = "num_gps_fixes";
     static final String PREF_W3W_KEY         = "w3w_api_key";
+    static final String PREF_TRACK_COLOUR    = "track_colour";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -108,6 +109,7 @@ public class LocationService extends Service implements LocationListener {
     int     displayPeriodHours = 12;
     int     numGpsFixes        = 5;
     String  w3wApiKey          = "";
+    String  trackColour        = "None";
     volatile String w3wAddress = "";
     volatile int w3wBackoffTicks = 0;  // ticks to skip before next attempt
     volatile int w3wFailCount    = 0;  // consecutive failures; reset on success
@@ -332,6 +334,7 @@ public class LocationService extends Service implements LocationListener {
         displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
         numGpsFixes        = p.getInt    (PREF_NUM_GPS_FIXES,  5);
         w3wApiKey          = p.getString (PREF_W3W_KEY,         "");
+        trackColour        = p.getString (PREF_TRACK_COLOUR,    "None");
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"

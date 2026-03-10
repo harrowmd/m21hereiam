@@ -61,6 +61,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onLapDistanceUpdate(service.lapDistanceKm);
             onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
+            mapView.setTrackColour(service.trackColour);
             // Restore Cancel Alert button if alert was already active
             if (service.alertActive)
                 btnCancelAlert.setVisibility(View.VISIBLE);
@@ -322,6 +323,21 @@ public class MainActivity extends Activity implements LocationService.Listener {
             String.valueOf(service.displayPeriodHours));
         layout.addView(editDisplayPeriod);
 
+        layout.addView(label("Track colour"));
+        final String[] trackColours = {"None", "Blue", "Red", "Yellow", "Black"};
+        final android.widget.Spinner spinnerTrackColour = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<String> trackColourAdapter = new android.widget.ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, trackColours);
+        trackColourAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerTrackColour.setAdapter(trackColourAdapter);
+        for (int i = 0; i < trackColours.length; i++) {
+            if (trackColours[i].equals(service.trackColour)) {
+                spinnerTrackColour.setSelection(i);
+                break;
+            }
+        }
+        layout.addView(spinnerTrackColour);
+
         final CheckBox checkBoot = new CheckBox(this);
         checkBoot.setText("Start on bootup");
         checkBoot.setChecked(service.startOnBoot);
@@ -397,6 +413,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     try { service.displayPeriodHours =
                         Math.max(1, Integer.parseInt(editDisplayPeriod.getText().toString().trim())); }
                     catch (NumberFormatException ignored) {}
+                    service.trackColour = trackColours[spinnerTrackColour.getSelectedItemPosition()];
+                    mapView.setTrackColour(service.trackColour);
                     // Persist to SharedPreferences
                     getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit()
                         .putInt    (LocationService.PREF_INTERVAL,        (int) (service.updateInterval / 1000))
@@ -410,6 +428,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
                         .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
+                        .putString (LocationService.PREF_TRACK_COLOUR,    service.trackColour)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters
