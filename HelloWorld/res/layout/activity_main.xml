@@ -59,7 +59,7 @@
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="1.3"
+            android:layout_weight="1.2"
             android:orientation="vertical">
 
             <TextView android:id="@+id/tv_dist"
@@ -126,7 +126,7 @@
             android:id="@+id/ll_w3w"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="0.7"
+            android:layout_weight="0.8"
             android:orientation="vertical"
             android:gravity="end"
             android:clickable="true"
