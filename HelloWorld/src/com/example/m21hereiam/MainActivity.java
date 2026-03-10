@@ -40,7 +40,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
-    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDist, tvAscent;
+    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvDist, tvSpeed, tvAscent;
     private TextView tvW3w1, tvW3w2, tvW3w3;
     private LinearLayout llW3w;
     private Button   btnCancelAlert;
@@ -57,7 +57,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             // Populate UI with whatever the service already knows
             onLocationUpdate(service.csvLat, service.csvLon, service.csvAlt, service.csvAccuracy);
             onSatellitesUpdate(service.csvSatellites);
-            onBatteryUpdate(service.csvBattery);
+
             onLapDistanceUpdate(service.lapDistanceKm);
             onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
@@ -95,8 +95,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvAlt        = (TextView) findViewById(R.id.tv_alt);
         tvAccuracy   = (TextView) findViewById(R.id.tv_accuracy);
         tvSatellites = (TextView) findViewById(R.id.tv_satellites);
-        tvBattery    = (TextView) findViewById(R.id.tv_battery);
         tvDist       = (TextView) findViewById(R.id.tv_dist);
+        tvSpeed      = (TextView) findViewById(R.id.tv_speed);
         tvAscent     = (TextView) findViewById(R.id.tv_ascent);
         tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
         tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
@@ -167,9 +167,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     @Override
     public void onBatteryUpdate(final int pct) {
-        runOnUiThread(new Runnable() {
-            @Override public void run() { tvBattery.setText("Battery: " + pct + "%"); }
-        });
+        // Battery not displayed; kept in log files via LocationService
     }
 
     @Override
@@ -179,6 +177,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 tvDist.setText(km < 0.001
                     ? "Dist: 0.000 km"
                     : String.format("Dist: %.3f km", km));
+                double speedKmh = bound && service.displayPeriodHours > 0
+                    ? km / service.displayPeriodHours : 0;
+                tvSpeed.setText(String.format("Speed: %.2f km/h", speedKmh));
             }
         });
     }
