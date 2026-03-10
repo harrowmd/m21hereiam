@@ -121,6 +121,7 @@ public class LocationService extends Service implements LocationListener {
     float  csvAccuracy   = 0;
     int    csvSatellites = 0;
     int    csvBattery    = 0;
+    double lapDistanceKm = 0;
 
     // ── UI callback interface ──────────────────────────────────────────────────
     interface Listener {
@@ -130,6 +131,7 @@ public class LocationService extends Service implements LocationListener {
         void onAlertStarted();
         void onAlertStopped();
         void onW3wUpdate(String words);
+        void onLapDistanceUpdate(double km);
     }
 
     private Listener uiListener;
@@ -209,6 +211,8 @@ public class LocationService extends Service implements LocationListener {
                         saveToCsv(avg, w3w);
                         saveToGpx(avg);
                         saveToKml(avg);
+                        lapDistanceKm = computeLapDistance();
+                        if (uiListener != null) uiListener.onLapDistanceUpdate(lapDistanceKm);
                     }
                 }).start();
             } else {
@@ -1055,6 +1059,34 @@ public class LocationService extends Service implements LocationListener {
         } catch (IOException e) {
             writeLog("KML reload error: " + e.getMessage());
         }
+    }
+
+    // ── Lap distance ──────────────────────────────────────────────────────────
+
+    private static double haversine(double lat1, double lon1, double lat2, double lon2) {
+        double R = 6371.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat/2) * Math.sin(dLat/2)
+                 + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                 * Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    private double computeLapDistance() {
+        long cutoff = System.currentTimeMillis() - displayPeriodHours * 3600_000L;
+        double total = 0;
+        double[] prev = null;
+        for (int i = 0; i < kmlTimestamps.size(); i++) {
+            try {
+                Date ts = tsFmt.parse(kmlTimestamps.get(i));
+                if (ts == null || ts.getTime() < cutoff) continue;
+                double[] ll = kmlLatLon.get(i);
+                if (prev != null) total += haversine(prev[0], prev[1], ll[0], ll[1]);
+                prev = ll;
+            } catch (Exception ignored) {}
+        }
+        return total;
     }
 
     // ── What3Words lookup (web scrape) ────────────────────────────────────────

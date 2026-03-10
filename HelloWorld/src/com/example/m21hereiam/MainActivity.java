@@ -40,7 +40,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
-    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDate, tvTime;
+    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDist, tvTime;
     private TextView tvW3w1, tvW3w2, tvW3w3;
     private LinearLayout llW3w;
     private Button   btnCancelAlert;
@@ -58,6 +58,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onLocationUpdate(service.csvLat, service.csvLon, service.csvAlt, service.csvAccuracy);
             onSatellitesUpdate(service.csvSatellites);
             onBatteryUpdate(service.csvBattery);
+            onLapDistanceUpdate(service.lapDistanceKm);
             loadTrackPoints();
             // Restore Cancel Alert button if alert was already active
             if (service.alertActive)
@@ -78,9 +79,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
-            Date now = new Date();
-            tvDate.setText(dateFmt.format(now));
-            tvTime.setText(timeFmt.format(now));
+            tvTime.setText(timeFmt.format(new Date()));
             clockHandler.postDelayed(this, 1000);
         }
     };
@@ -99,7 +98,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvAccuracy   = (TextView) findViewById(R.id.tv_accuracy);
         tvSatellites = (TextView) findViewById(R.id.tv_satellites);
         tvBattery    = (TextView) findViewById(R.id.tv_battery);
-        tvDate       = (TextView) findViewById(R.id.tv_date);
+        tvDist       = (TextView) findViewById(R.id.tv_dist);
         tvTime       = (TextView) findViewById(R.id.tv_time);
         tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
         tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
@@ -172,6 +171,17 @@ public class MainActivity extends Activity implements LocationService.Listener {
     public void onBatteryUpdate(final int pct) {
         runOnUiThread(new Runnable() {
             @Override public void run() { tvBattery.setText("Battery: " + pct + "%"); }
+        });
+    }
+
+    @Override
+    public void onLapDistanceUpdate(final double km) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                tvDist.setText(km < 0.001
+                    ? "Dist: 0.000 km"
+                    : String.format("Dist: %.3f km", km));
+            }
         });
     }
 
