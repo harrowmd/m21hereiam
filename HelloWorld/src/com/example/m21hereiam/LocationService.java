@@ -346,6 +346,8 @@ public class LocationService extends Service implements LocationListener {
         uploadHandler.removeCallbacks(uploadTick);
         uploadHandler.postDelayed(uploadTick, uploadInterval);
         uploadFiles();
+        lapDistanceKm = computeLapDistance();
+        if (uiListener != null) uiListener.onLapDistanceUpdate(lapDistanceKm);
     }
 
     // ── Location ──────────────────────────────────────────────────────────────
