@@ -59,6 +59,8 @@ location. Two buttons are visible:
 Your **current location** is shown as a solid blue dot. A trail of smaller
 blue dots shows previously recorded positions within the **Display period**
 and with at least **Min satellites** in fix (see [Settings](#5-settings)).
+An optional **track line** can be drawn connecting the dots in a colour of
+your choice (see [Track colour](#track-colour) in Settings).
 
 The notification bar at the top of the phone will show a persistent
 **"Here I Am Now"** notification while the app is running, displaying your
@@ -68,20 +70,37 @@ current coordinates. This keeps the background service alive.
 
 ## 3. Data Overlay
 
-A semi-transparent bar at the bottom of the screen shows live sensor data,
-updated every second:
+A semi-transparent bar at the bottom of the screen shows live data.
+The three columns are updated at each **Update interval**:
 
 | Left column | Centre column | Right column (right-justified) |
 |-------------|---------------|-------------------------------|
-| Date (`yyyy-mm-dd`) | Latitude | "What3Words" |
-| Time (`HH:mm:ss`) | Longitude | word 1 |
-| Battery % | Altitude (m) | word 2 |
+| `Dist: X.XXX km` | Latitude | "What3Words" |
+| `Speed: X.XX km/h` | Longitude | word 1 |
+| `Ascent: X m` | Altitude (m) | word 2 |
 | Satellites in fix | Accuracy (m) | word 3 |
 
-The **What3Words** column shows the three-word address for the most recently
-logged GPS fix. It is updated at each **Update interval** after the averaged
-position is calculated. It may show `--` until the first fix is logged or
-while a lookup is in progress.
+### Dist (distance)
+Total distance in kilometres between consecutive GPS fixes recorded within
+the current **Display period**. Calculated using the Haversine formula.
+Resets when the service is restarted or when the display period rolls over.
+
+### Speed
+Average speed over the display period: **Dist ÷ Display period (hours)**,
+shown in km/h. This is a session-average speed, not instantaneous speed.
+
+### Ascent
+Cumulative altitude climbed (metres) within the display period. Only upward
+altitude changes of 5 m or more are counted, filtering out GPS altitude noise.
+Descents are ignored.
+
+> Battery percentage is **not** shown on screen but is still recorded in the
+> log files at every GPS fix.
+
+### What3Words
+The three-word address for the most recently logged GPS fix, updated at each
+**Update interval**. Shows `--` until the first fix is logged or while a
+lookup is in progress.
 
 When a What3Words address is shown the three words turn **light blue**.
 Tapping anywhere on the What3Words column opens
@@ -158,9 +177,9 @@ Set to `0` to display all recorded positions regardless of GPS quality.
 How far back in time the map trail of small blue dots extends.
 Default: `12` hours.
 
-For example, with the default setting only fixes from the last 12 hours are
-shown on the map. Increase this to see a longer history. Changing this
-setting and tapping **Save** updates the map immediately.
+This setting also defines the time window used to calculate **Dist**,
+**Speed**, and **Ascent** in the data overlay. Changing this value and
+tapping **Save** updates the map and all three figures immediately.
 
 ### Num GPS fixes
 How many GPS samples to collect and average for each logged position.
@@ -176,6 +195,21 @@ switched off after each log tick and restarted only shortly before the
 next tick is due. With default settings (60 s interval, 5 fixes) the
 GPS is active for approximately 30 s and off for 30 s, saving around
 50 % of GPS battery consumption compared to running continuously.
+
+### Track colour
+Colour of the line drawn between the GPS track dots on the map.
+Default: `None` (no line, dots only).
+
+| Option | Effect |
+|--------|--------|
+| None | No line drawn; only the small blue dots are shown |
+| Blue | Fine blue line connecting the dots |
+| Red | Fine red line |
+| Yellow | Fine yellow line |
+| Black | Fine black line |
+
+The line is drawn beneath the dots so the dots remain clearly visible.
+The selected colour is saved and restored when the app restarts.
 
 ### Start on bootup
 When ticked (default), the app starts automatically when the phone is
