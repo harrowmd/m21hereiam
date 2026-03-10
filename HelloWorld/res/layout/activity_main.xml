@@ -68,10 +68,10 @@
                 android:text="Dist: --"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
-            <TextView android:id="@+id/tv_time"
+            <TextView android:id="@+id/tv_ascent"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="--"
+                android:text="Ascent: --"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_battery"

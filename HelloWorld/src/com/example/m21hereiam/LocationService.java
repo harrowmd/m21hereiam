@@ -92,6 +92,7 @@ public class LocationService extends Service implements LocationListener {
     // KML in-memory track (reloaded from CSV on service restart)
     private final java.util.List<String>   kmlTimestamps  = new java.util.ArrayList<>();
     private final java.util.List<double[]> kmlLatLon      = new java.util.ArrayList<>();
+    private final java.util.List<Double>   lapAltitudes   = new java.util.ArrayList<>();
     private String kmlCurrentDate = "";
 
     // ── Settings ──────────────────────────────────────────────────────────────
@@ -122,6 +123,7 @@ public class LocationService extends Service implements LocationListener {
     int    csvSatellites = 0;
     int    csvBattery    = 0;
     double lapDistanceKm = 0;
+    double lapAscentM    = 0;
 
     // ── UI callback interface ──────────────────────────────────────────────────
     interface Listener {
@@ -132,6 +134,7 @@ public class LocationService extends Service implements LocationListener {
         void onAlertStopped();
         void onW3wUpdate(String words);
         void onLapDistanceUpdate(double km);
+        void onLapAscentUpdate(double m);
     }
 
     private Listener uiListener;
@@ -213,6 +216,8 @@ public class LocationService extends Service implements LocationListener {
                         saveToKml(avg);
                         lapDistanceKm = computeLapDistance();
                         if (uiListener != null) uiListener.onLapDistanceUpdate(lapDistanceKm);
+                        lapAscentM = computeLapAscent();
+                        if (uiListener != null) uiListener.onLapAscentUpdate(lapAscentM);
                     }
                 }).start();
             } else {
@@ -348,6 +353,8 @@ public class LocationService extends Service implements LocationListener {
         uploadFiles();
         lapDistanceKm = computeLapDistance();
         if (uiListener != null) uiListener.onLapDistanceUpdate(lapDistanceKm);
+        lapAscentM = computeLapAscent();
+        if (uiListener != null) uiListener.onLapAscentUpdate(lapAscentM);
     }
 
     // ── Location ──────────────────────────────────────────────────────────────
@@ -994,6 +1001,7 @@ public class LocationService extends Service implements LocationListener {
         if (!today.equals(kmlCurrentDate)) {
             kmlTimestamps.clear();
             kmlLatLon.clear();
+            lapAltitudes.clear();
             kmlCurrentDate = today;
         }
         // Reload from CSV if list is empty (service restart)
@@ -1003,6 +1011,7 @@ public class LocationService extends Service implements LocationListener {
 
         kmlTimestamps.add(tsFmt.format(now));
         kmlLatLon.add(new double[]{avg[0], avg[1]}); // averaged lat, lon
+        lapAltitudes.add(avg[2]);                    // averaged altitude
 
         try {
             FileWriter fw = new FileWriter(file, false); // overwrite each time
@@ -1048,12 +1057,14 @@ public class LocationService extends Service implements LocationListener {
             while ((line = br.readLine()) != null) {
                 if (header) { header = false; continue; }
                 String[] cols = line.split(",");
-                if (cols.length < 5) continue;
+                if (cols.length < 6) continue;
                 try {
                     double lat = Double.parseDouble(cols[3]);
                     double lon = Double.parseDouble(cols[4]);
+                    double alt = Double.parseDouble(cols[5]);
                     kmlTimestamps.add(cols[0]);
                     kmlLatLon.add(new double[]{lat, lon});
+                    lapAltitudes.add(alt);
                 } catch (NumberFormatException ignored) {}
             }
             br.close();
@@ -1086,6 +1097,22 @@ public class LocationService extends Service implements LocationListener {
                 double[] ll = kmlLatLon.get(i);
                 if (prev != null) total += haversine(prev[0], prev[1], ll[0], ll[1]);
                 prev = ll;
+            } catch (Exception ignored) {}
+        }
+        return total;
+    }
+
+    private double computeLapAscent() {
+        long cutoff = System.currentTimeMillis() - displayPeriodHours * 3600_000L;
+        double total = 0;
+        Double prevAlt = null;
+        for (int i = 0; i < kmlTimestamps.size(); i++) {
+            try {
+                Date ts = tsFmt.parse(kmlTimestamps.get(i));
+                if (ts == null || ts.getTime() < cutoff) continue;
+                double alt = lapAltitudes.get(i);
+                if (prevAlt != null && alt > prevAlt) total += alt - prevAlt;
+                prevAlt = alt;
             } catch (Exception ignored) {}
         }
         return total;

@@ -40,7 +40,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
-    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDist, tvTime;
+    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvBattery, tvDist, tvAscent;
     private TextView tvW3w1, tvW3w2, tvW3w3;
     private LinearLayout llW3w;
     private Button   btnCancelAlert;
@@ -59,6 +59,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onSatellitesUpdate(service.csvSatellites);
             onBatteryUpdate(service.csvBattery);
             onLapDistanceUpdate(service.lapDistanceKm);
+            onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
             // Restore Cancel Alert button if alert was already active
             if (service.alertActive)
@@ -78,10 +79,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
     private final SimpleDateFormat tsFmt   = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
 
     private final Runnable clockTick = new Runnable() {
-        @Override public void run() {
-            tvTime.setText(timeFmt.format(new Date()));
-            clockHandler.postDelayed(this, 1000);
-        }
+        @Override public void run() { clockHandler.postDelayed(this, 1000); }
     };
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -99,7 +97,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvSatellites = (TextView) findViewById(R.id.tv_satellites);
         tvBattery    = (TextView) findViewById(R.id.tv_battery);
         tvDist       = (TextView) findViewById(R.id.tv_dist);
-        tvTime       = (TextView) findViewById(R.id.tv_time);
+        tvAscent     = (TextView) findViewById(R.id.tv_ascent);
         tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
         tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
         tvW3w3       = (TextView) findViewById(R.id.tv_w3w_3);
@@ -181,6 +179,15 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 tvDist.setText(km < 0.001
                     ? "Dist: 0.000 km"
                     : String.format("Dist: %.3f km", km));
+            }
+        });
+    }
+
+    @Override
+    public void onLapAscentUpdate(final double m) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                tvAscent.setText(String.format("Ascent: %.0f m", m));
             }
         });
     }
