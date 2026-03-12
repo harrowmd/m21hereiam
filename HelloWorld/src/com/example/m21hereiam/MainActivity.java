@@ -152,8 +152,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
             @Override public void run() {
                 tvLat.setText(String.format("Lat: %.6f",          lat));
                 tvLon.setText(String.format("Lon: %.6f",          lon));
-                tvAlt.setText(String.format("Alt: %.1f m",        alt));
-                tvAccuracy.setText(String.format("Accuracy: %.1f m", acc));
+                tvAlt.setText(String.format("Alt: %.0f m",        alt));
+                tvAccuracy.setText(String.format("Accuracy: %.0f m", acc));
                 mapView.setLocation(lat, lon);
             }
         });
@@ -176,11 +176,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
         runOnUiThread(new Runnable() {
             @Override public void run() {
                 tvDist.setText(km < 0.001
-                    ? "Dist: 0.000 km"
-                    : String.format("Dist: %.3f km", km));
+                    ? "Dist: 0.00 km"
+                    : String.format("Dist: %.2f km", km));
                 double speedKmh = bound && service.displayPeriodHours > 0
                     ? km / service.displayPeriodHours : 0;
-                tvSpeed.setText(String.format("Speed: %.2f km/h", speedKmh));
+                tvSpeed.setText(String.format("Speed: %.1f km/h", speedKmh));
             }
         });
     }
