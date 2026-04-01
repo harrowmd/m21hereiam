@@ -323,6 +323,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
             String.valueOf(service.displayPeriodHours));
         layout.addView(editDisplayPeriod);
 
+        layout.addView(label("Log file retention (days)"));
+        final EditText editRetention = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(service.retentionDays));
+        layout.addView(editRetention);
+
         layout.addView(label("Track colour"));
         final String[] trackColours = {"None", "Blue", "Red", "Yellow", "Black"};
         final android.widget.Spinner spinnerTrackColour = new android.widget.Spinner(this);
@@ -415,6 +420,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     catch (NumberFormatException ignored) {}
                     service.trackColour = trackColours[spinnerTrackColour.getSelectedItemPosition()];
                     mapView.setTrackColour(service.trackColour);
+                    try { service.retentionDays =
+                        Math.max(1, Integer.parseInt(editRetention.getText().toString().trim())); }
+                    catch (NumberFormatException ignored) {}
                     // Persist to SharedPreferences
                     getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit()
                         .putInt    (LocationService.PREF_INTERVAL,        (int) (service.updateInterval / 1000))
@@ -429,6 +437,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
                         .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
                         .putString (LocationService.PREF_TRACK_COLOUR,    service.trackColour)
+                        .putInt    (LocationService.PREF_RETENTION_DAYS,  service.retentionDays)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters

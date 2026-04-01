@@ -84,6 +84,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_NUM_GPS_FIXES   = "num_gps_fixes";
     static final String PREF_W3W_KEY         = "w3w_api_key";
     static final String PREF_TRACK_COLOUR    = "track_colour";
+    static final String PREF_RETENTION_DAYS  = "retention_days";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -110,6 +111,7 @@ public class LocationService extends Service implements LocationListener {
     int     numGpsFixes        = 5;
     String  w3wApiKey          = "";
     String  trackColour        = "None";
+    int     retentionDays      = 31;
     volatile String w3wAddress = "";
     volatile int w3wBackoffTicks = 0;  // ticks to skip before next attempt
     volatile int w3wFailCount    = 0;  // consecutive failures; reset on success
@@ -335,6 +337,7 @@ public class LocationService extends Service implements LocationListener {
         numGpsFixes        = p.getInt    (PREF_NUM_GPS_FIXES,  5);
         w3wApiKey          = p.getString (PREF_W3W_KEY,         "");
         trackColour        = p.getString (PREF_TRACK_COLOUR,    "None");
+        retentionDays      = p.getInt    (PREF_RETENTION_DAYS,  31);
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
@@ -493,6 +496,7 @@ public class LocationService extends Service implements LocationListener {
                     writeLog("Upload done: " + uploaded + " file(s) \u2192 " + sess);
                     if (!alert.isEmpty())
                         checkForAlert(alert, sessionDir, auth, dir);
+                    deleteOldNextcloudFiles(sessionDir, auth);
                 } catch (Exception e) {
                     writeLog("Upload failed: " + e.getMessage());
                 }
@@ -1249,7 +1253,7 @@ public class LocationService extends Service implements LocationListener {
     }
 
     private void deleteOldFiles(File dir, String suffix) {
-        long cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000;
+        long cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000;
         File[] files = dir.listFiles();
         if (files == null) return;
         for (File f : files) {
@@ -1260,5 +1264,33 @@ public class LocationService extends Service implements LocationListener {
                 if (d != null && d.getTime() < cutoff) f.delete();
             } catch (java.text.ParseException ignored) {}
         }
+    }
+
+    private void deleteOldNextcloudFiles(String sessionDir, String auth) {
+        long now   = System.currentTimeMillis();
+        long dayMs = 24L * 60 * 60 * 1000;
+        int deleted = 0;
+        // Try to DELETE files for dates from retentionDays to retentionDays+30 days ago
+        for (int age = retentionDays; age <= retentionDays + 30; age++) {
+            String dateStr = dateFmt.format(new Date(now - age * dayMs));
+            for (String suffix : LOG_SUFFIXES) {
+                String fileName = dateStr + suffix;
+                try {
+                    HttpURLConnection c = (HttpURLConnection)
+                        new URL(sessionDir + enc(fileName)).openConnection();
+                    c.setRequestMethod("DELETE");
+                    c.setRequestProperty("Authorization", auth);
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(15000);
+                    int code = c.getResponseCode();
+                    c.disconnect();
+                    if (code >= 200 && code < 300) {
+                        writeLog("NC delete: " + fileName);
+                        deleted++;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        if (deleted > 0) writeLog("NC deleted " + deleted + " old file(s)");
     }
 }
