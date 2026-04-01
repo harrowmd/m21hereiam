@@ -43,6 +43,7 @@ public class MapView extends View {
     private float   lastTouchX  = 0;
     private float   lastTouchY  = 0;
     private boolean isDragging  = false;
+    private boolean isPinching  = false;
 
     private final ConcurrentHashMap<String, Bitmap>  tileCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
@@ -111,6 +112,12 @@ public class MapView extends View {
 
     private class PinchListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
         @Override
+        public boolean onScaleBegin(ScaleGestureDetector detector) {
+            isPinching = true;
+            return true;
+        }
+
+        @Override
         public boolean onScale(ScaleGestureDetector detector) {
             displayScale *= detector.getScaleFactor();
             displayScale  = Math.max(0.25f, Math.min(displayScale, 4.0f));
@@ -119,17 +126,22 @@ public class MapView extends View {
             while (displayScale >= 2.0f && zoom < MAX_ZOOM) {
                 zoom++;
                 displayScale /= 2.0f;
-                prefetchTiles();
             }
             // Demote when we've shrunk to half
             while (displayScale <= 0.5f && zoom > MIN_ZOOM) {
                 zoom--;
                 displayScale *= 2.0f;
-                prefetchTiles();
             }
 
             invalidate();
             return true;
+        }
+
+        @Override
+        public void onScaleEnd(ScaleGestureDetector detector) {
+            isPinching = false;
+            prefetchTiles();
+            invalidate();
         }
     }
 
@@ -324,7 +336,7 @@ public class MapView extends View {
                     canvas.drawBitmap(tile, null, tileRect, tilePaint);
                 } else {
                     canvas.drawRect(tileRect, placeholderPaint);
-                    fetchTile(zoom, tx, ty);
+                    if (!isPinching) fetchTile(zoom, tx, ty);
                 }
             }
         }
