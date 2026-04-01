@@ -137,9 +137,10 @@ public class MapView extends View {
         public void onScaleEnd(ScaleGestureDetector detector) {
             isPinching = false;
             // Normalise: fold accumulated displayScale back into integer zoom levels
-            // Thresholds doubled (4× / 0.25×) to defer re-tiling until more zoomed
+            // Zoom in: deferred threshold (4×) — less aggressive re-tiling when expanding
+            // Zoom out: original threshold (0.5×) — quick return to lower-res tiles when shrinking
             while (displayScale >= 4.0f && zoom < MAX_ZOOM) { zoom++; displayScale /= 2.0f; }
-            while (displayScale <= 0.25f && zoom > MIN_ZOOM) { zoom--; displayScale *= 2.0f; }
+            while (displayScale <= 0.5f && zoom > MIN_ZOOM) { zoom--; displayScale *= 2.0f; }
             // Debounce: cancel any pending fetch and schedule a fresh one
             tileHandler.removeCallbacks(tileFetchRunnable);
             tileHandler.postDelayed(tileFetchRunnable, TILE_FETCH_DELAY_MS);
