@@ -49,6 +49,12 @@ public class MapView extends View {
     private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
+    private final android.os.Handler tileHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final long TILE_FETCH_DELAY_MS = 800;
+    private final Runnable tileFetchRunnable = new Runnable() {
+        @Override public void run() { prefetchTiles(); invalidate(); }
+    };
+
     // Track history points (lat, lon pairs) for the current 24-hour period
     private List<double[]> trackPoints = new ArrayList<>();
 
@@ -131,10 +137,12 @@ public class MapView extends View {
         public void onScaleEnd(ScaleGestureDetector detector) {
             isPinching = false;
             // Normalise: fold accumulated displayScale back into integer zoom levels
-            while (displayScale >= 2.0f && zoom < MAX_ZOOM) { zoom++; displayScale /= 2.0f; }
-            while (displayScale <= 0.5f && zoom > MIN_ZOOM) { zoom--; displayScale *= 2.0f; }
-            prefetchTiles();
-            invalidate();
+            // Thresholds doubled (4× / 0.25×) to defer re-tiling until more zoomed
+            while (displayScale >= 4.0f && zoom < MAX_ZOOM) { zoom++; displayScale /= 2.0f; }
+            while (displayScale <= 0.25f && zoom > MIN_ZOOM) { zoom--; displayScale *= 2.0f; }
+            // Debounce: cancel any pending fetch and schedule a fresh one
+            tileHandler.removeCallbacks(tileFetchRunnable);
+            tileHandler.postDelayed(tileFetchRunnable, TILE_FETCH_DELAY_MS);
         }
     }
 
