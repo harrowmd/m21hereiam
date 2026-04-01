@@ -119,20 +119,10 @@ public class MapView extends View {
 
         @Override
         public boolean onScale(ScaleGestureDetector detector) {
+            // Accumulate display scale freely — don't change zoom integer during pinch
+            // so existing cached tiles remain visible (just stretched/shrunk).
             displayScale *= detector.getScaleFactor();
-            displayScale  = Math.max(0.25f, Math.min(displayScale, 4.0f));
-
-            // Promote to next integer zoom level when we've scaled 2×
-            while (displayScale >= 2.0f && zoom < MAX_ZOOM) {
-                zoom++;
-                displayScale /= 2.0f;
-            }
-            // Demote when we've shrunk to half
-            while (displayScale <= 0.5f && zoom > MIN_ZOOM) {
-                zoom--;
-                displayScale *= 2.0f;
-            }
-
+            displayScale  = Math.max(0.03125f, Math.min(displayScale, 32.0f));
             invalidate();
             return true;
         }
@@ -140,6 +130,9 @@ public class MapView extends View {
         @Override
         public void onScaleEnd(ScaleGestureDetector detector) {
             isPinching = false;
+            // Normalise: fold accumulated displayScale back into integer zoom levels
+            while (displayScale >= 2.0f && zoom < MAX_ZOOM) { zoom++; displayScale /= 2.0f; }
+            while (displayScale <= 0.5f && zoom > MIN_ZOOM) { zoom--; displayScale *= 2.0f; }
             prefetchTiles();
             invalidate();
         }
