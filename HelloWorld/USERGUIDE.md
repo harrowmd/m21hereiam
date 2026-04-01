@@ -218,6 +218,19 @@ Default: `None` (no line, dots only).
 The line is drawn beneath the dots so the dots remain clearly visible.
 The selected colour is saved and restored when the app restarts.
 
+### Log file retention (days)
+How many days of log files to keep, both on the device and on Nextcloud.
+Default: `31` days. Minimum: `1` day.
+
+Local files in the Documents folder older than this are deleted automatically.
+Nextcloud files in the session folder are also deleted via the server API
+at each upload cycle. Deletions are recorded in the `.txt` log:
+
+```
+NC delete: 2025-12-01-hia.csv
+NC deleted 4 old file(s)
+```
+
 ### Start on bootup
 When ticked (default), the app starts automatically when the phone is
 switched on. No manual launch is needed.
@@ -236,7 +249,7 @@ newer release. The result is shown below the build information:
 | Message | Meaning |
 |---------|---------|
 | `Checking for updates…` | Check in progress |
-| `Up to date (v1.7)` | You have the latest version |
+| `Up to date (v1.8)` | You have the latest version |
 | `New version available: v1.x` | A newer release exists |
 
 When a new version is available, a **Download & Install vX.Y** button
@@ -263,8 +276,9 @@ folder (`Internal Storage / Documents`):
 | `YYYY-MM-DD-hia.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
 | `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log, including What3Words lookup results |
 
-Files roll over at midnight. Files older than **30 days** are deleted
-automatically.
+Files roll over at midnight. Files older than the **Log file retention**
+setting (default 31 days) are deleted automatically from both the device
+and Nextcloud.
 
 ### CSV format
 
@@ -480,9 +494,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v1.7 (8)
+Here I Am Now  v1.8 (9)
 Built: 2026-04-01 17:21
-Up to date (v1.7)
+Up to date (v1.8)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
