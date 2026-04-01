@@ -75,10 +75,10 @@ The three columns are updated at each **Update interval**:
 
 | Left column | Centre column | Right column (right-justified) |
 |-------------|---------------|-------------------------------|
-| `Dist: X.XXX km` | Latitude | "What3Words" |
-| `Speed: X.XX km/h` | Longitude | word 1 |
-| `Ascent: X m` | Altitude (m) | word 2 |
-| Satellites in fix | Accuracy (m) | word 3 |
+| `Dist: X.XX km` | Latitude | "What3Words" |
+| `Speed: X.X km/h` | Longitude | word 1 |
+| `Ascent: X m` | Altitude (m, integer) | word 2 |
+| Satellites in fix | Accuracy (m, integer) | word 3 |
 
 ### Dist (distance)
 Total distance in kilometres between consecutive GPS fixes recorded within
@@ -122,6 +122,13 @@ Tap ⊕ to return the view to your location.
 
 Map tiles are fetched from **OpenStreetMap** over the internet and cached
 while the app is running.
+
+**Pinch zoom tile loading:** while your fingers are on the screen the
+existing map tiles scale smoothly. New higher-resolution tiles are only
+fetched after you lift your fingers, with an 800 ms pause before loading
+begins. Zooming in defers the switch to higher-resolution tiles until you
+have scaled to 4× the current tile size; zooming out switches back to
+lower-resolution tiles promptly at 0.5×.
 
 ---
 
@@ -229,7 +236,7 @@ newer release. The result is shown below the build information:
 | Message | Meaning |
 |---------|---------|
 | `Checking for updates…` | Check in progress |
-| `Up to date (v1.1)` | You have the latest version |
+| `Up to date (v1.7)` | You have the latest version |
 | `New version available: v1.x` | A newer release exists |
 
 When a new version is available, a **Download & Install vX.Y** button
@@ -473,9 +480,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v1.1 (2)
-Built: 2026-03-01 16:59
-Up to date (v1.1)
+Here I Am Now  v1.7 (8)
+Built: 2026-04-01 17:21
+Up to date (v1.7)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
