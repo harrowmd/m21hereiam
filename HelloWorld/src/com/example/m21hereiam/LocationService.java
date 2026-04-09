@@ -44,6 +44,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 
@@ -747,11 +748,18 @@ public class LocationService extends Service implements LocationListener {
 
     // ── Alert camera photos ───────────────────────────────────────────────────
 
+    @SuppressWarnings("deprecation")
     private void takeAlertPhotos(String sessionDir, String auth) {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             writeLog("Alert photos: CAMERA permission not granted, skipping");
             return;
         }
+        // Wake screen before opening camera — some devices disable camera by policy when screen is off
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        PowerManager.WakeLock wl = pm.newWakeLock(
+            PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.ON_AFTER_RELEASE,
+            "hereiamnow:alertcam");
+        wl.acquire(30000);
         CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
         String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
         String today     = dateFmt.format(new Date());
@@ -775,6 +783,7 @@ public class LocationService extends Service implements LocationListener {
                 writeLog("Alert photos: " + facingName + " error: " + e.getMessage());
             }
         }
+        if (wl.isHeld()) wl.release();
     }
 
     @SuppressWarnings("deprecation")
