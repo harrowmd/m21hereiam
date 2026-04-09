@@ -31,7 +31,10 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import java.util.Arrays;
 import android.graphics.ImageFormat;
 import android.media.AudioAttributes;
 import android.media.Image;
@@ -79,6 +82,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_NC_PASS         = "nextcloud_pass";
     static final String PREF_SESSION         = "session";
     static final String PREF_ALERT_CODE      = "alert_code";
+    static final String PREF_ALERT_PHOTOS    = "alert_photos";
     static final String PREF_START_ON_BOOT   = "start_on_boot";
     static final String PREF_MIN_SAT         = "min_sat";
     static final String PREF_DISPLAY_PERIOD  = "display_period_hours";
@@ -106,6 +110,7 @@ public class LocationService extends Service implements LocationListener {
     String nextcloudPass  = "";
     String session        = "mobyphone";
     String  alertCode          = "911911";
+    int     alertPhotos        = 3;
     boolean startOnBoot        = true;
     int     minSat             = 4;
     int     displayPeriodHours = 12;
@@ -332,6 +337,7 @@ public class LocationService extends Service implements LocationListener {
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
         session        = p.getString(PREF_SESSION,     "mobyphone");
         alertCode          = p.getString (PREF_ALERT_CODE,    "911911");
+        alertPhotos        = Math.max(0, Math.min(9, p.getInt(PREF_ALERT_PHOTOS, 3)));
         startOnBoot        = p.getBoolean(PREF_START_ON_BOOT, true);
         minSat             = p.getInt    (PREF_MIN_SAT,        4);
         displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
@@ -754,19 +760,20 @@ public class LocationService extends Service implements LocationListener {
             writeLog("Alert photos: CAMERA permission not granted, skipping");
             return;
         }
+        if (alertPhotos == 0) {
+            writeLog("Alert photos: disabled (alert_photos=0)");
+            return;
+        }
         // Wake screen before opening camera — some devices disable camera by policy when screen is off
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         PowerManager.WakeLock wl = pm.newWakeLock(
             PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.ON_AFTER_RELEASE,
             "hereiamnow:alertcam");
-        wl.acquire(30000);
+        wl.acquire(180000); // 3 min: 3 photos × 2 cameras × 10s delays + AE + upload overhead
         CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
-        String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
-        String today     = dateFmt.format(new Date());
         int[] facings = {CameraCharacteristics.LENS_FACING_FRONT, CameraCharacteristics.LENS_FACING_BACK};
         for (int facing : facings) {
             String facingName = (facing == CameraCharacteristics.LENS_FACING_FRONT) ? "front" : "rear";
-            String fileName   = today + "-" + timestamp + "-hia-alert-" + facingName + ".jpg";
             try {
                 String cameraId = null;
                 for (String id : cm.getCameraIdList()) {
@@ -777,8 +784,7 @@ public class LocationService extends Service implements LocationListener {
                     writeLog("Alert photos: no " + facingName + " camera found");
                     continue;
                 }
-                writeLog("Alert photos: capturing " + facingName);
-                takeAndUploadPhoto(cm, cameraId, facingName, fileName, sessionDir, auth);
+                takeAndUploadPhotos(cm, cameraId, facingName, alertPhotos, 10000, sessionDir, auth);
             } catch (Exception e) {
                 writeLog("Alert photos: " + facingName + " error: " + e.getMessage());
             }
@@ -786,10 +792,13 @@ public class LocationService extends Service implements LocationListener {
         if (wl.isHeld()) wl.release();
     }
 
+    // Takes photoCount JPEG photos from one camera, with delayMs between shots.
+    // Before each shot, runs a short preview so the camera's auto-exposure can converge.
+    // Between shots the preview continues running so AE keeps adapting to lighting.
     @SuppressWarnings("deprecation")
-    private void takeAndUploadPhoto(CameraManager cm, String cameraId, final String facingName,
-                                     final String fileName, final String sessionDir,
-                                     final String auth) throws Exception {
+    private void takeAndUploadPhotos(CameraManager cm, String cameraId, final String facingName,
+                                      int photoCount, int delayMs,
+                                      final String sessionDir, final String auth) throws Exception {
         // Pick best JPEG size up to 2MP
         StreamConfigurationMap map = cm.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
@@ -805,81 +814,140 @@ public class LocationService extends Service implements LocationListener {
         HandlerThread ht = new HandlerThread("AlertCam_" + facingName);
         ht.start();
         android.os.Handler handler = new android.os.Handler(ht.getLooper());
-        final CountDownLatch latch  = new CountDownLatch(1);
-        final File outFile          = new File(docsDir(), fileName);
-        final CameraDevice[] camRef = {null};
 
-        final ImageReader reader = ImageReader.newInstance(
-            picSize.getWidth(), picSize.getHeight(), ImageFormat.JPEG, 1);
-        reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+        // Small preview reader — frames are discarded; exists only to give the camera an
+        // output surface so auto-exposure can run before the still capture.
+        final ImageReader previewReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2);
+        previewReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
             @Override public void onImageAvailable(ImageReader r) {
                 Image img = r.acquireLatestImage();
-                if (img != null) {
-                    ByteBuffer buf   = img.getPlanes()[0].getBuffer();
-                    byte[]     bytes = new byte[buf.remaining()];
-                    buf.get(bytes);
-                    img.close();
-                    try {
-                        FileOutputStream fos = new FileOutputStream(outFile);
-                        fos.write(bytes); fos.close();
-                        writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
-                        int code = putFile(outFile, sessionDir + enc(fileName), auth);
-                        writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
-                    } catch (Exception e) {
-                        writeLog("Alert photo: save/upload error: " + e.getMessage());
-                    }
-                }
-                if (camRef[0] != null) { try { camRef[0].close(); } catch (Exception ignored) {} }
-                latch.countDown();
+                if (img != null) img.close();
             }
         }, handler);
 
+        // Full-resolution still reader
+        final ImageReader stillReader = ImageReader.newInstance(
+            picSize.getWidth(), picSize.getHeight(), ImageFormat.JPEG, 1);
+
+        final CameraDevice[]         camRef  = {null};
+        final CameraCaptureSession[] sessRef = {null};
+
+        // Open camera
+        final CountDownLatch openLatch = new CountDownLatch(1);
+        cm.openCamera(cameraId, new CameraDevice.StateCallback() {
+            @Override public void onOpened(CameraDevice camera) {
+                camRef[0] = camera; openLatch.countDown();
+            }
+            @Override public void onDisconnected(CameraDevice camera) {
+                try { camera.close(); } catch (Exception ignored) {}
+                openLatch.countDown();
+            }
+            @Override public void onError(CameraDevice camera, int error) {
+                writeLog("Alert photo: camera error " + error);
+                try { camera.close(); } catch (Exception ignored) {}
+                openLatch.countDown();
+            }
+        }, handler);
+
+        if (!openLatch.await(5, TimeUnit.SECONDS) || camRef[0] == null) {
+            previewReader.close(); stillReader.close(); ht.quitSafely();
+            writeLog("Alert photos: " + facingName + " camera open failed");
+            return;
+        }
+
         try {
-            cm.openCamera(cameraId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice camera) {
-                    camRef[0] = camera;
-                    try {
-                        CaptureRequest.Builder builder =
-                            camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-                        builder.addTarget(reader.getSurface());
-                        builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                        camera.createCaptureSession(
-                            Collections.singletonList(reader.getSurface()),
-                            new CameraCaptureSession.StateCallback() {
-                                @Override public void onConfigured(CameraCaptureSession session) {
-                                    try {
-                                        session.capture(builder.build(), null, handler);
-                                    } catch (Exception e) {
-                                        writeLog("Alert photo: capture error: " + e.getMessage());
-                                        try { camera.close(); } catch (Exception ignored) {}
-                                        latch.countDown();
-                                    }
-                                }
-                                @Override public void onConfigureFailed(CameraCaptureSession session) {
-                                    writeLog("Alert photo: session config failed");
-                                    try { camera.close(); } catch (Exception ignored) {}
-                                    latch.countDown();
-                                }
-                            }, handler);
-                    } catch (Exception e) {
-                        writeLog("Alert photo: setup error: " + e.getMessage());
-                        try { camera.close(); } catch (Exception ignored) {}
-                        latch.countDown();
+            // Single session with both surfaces — stays open for all photos
+            final CountDownLatch sessLatch = new CountDownLatch(1);
+            camRef[0].createCaptureSession(
+                Arrays.asList(previewReader.getSurface(), stillReader.getSurface()),
+                new CameraCaptureSession.StateCallback() {
+                    @Override public void onConfigured(CameraCaptureSession s) {
+                        sessRef[0] = s; sessLatch.countDown();
                     }
+                    @Override public void onConfigureFailed(CameraCaptureSession s) {
+                        writeLog("Alert photo: session config failed"); sessLatch.countDown();
+                    }
+                }, handler);
+
+            if (!sessLatch.await(5, TimeUnit.SECONDS) || sessRef[0] == null) {
+                writeLog("Alert photos: " + facingName + " session failed");
+                return;
+            }
+
+            final CaptureRequest.Builder previewReq =
+                camRef[0].createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            previewReq.addTarget(previewReader.getSurface());
+            previewReq.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+
+            final CaptureRequest.Builder stillReq =
+                camRef[0].createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            stillReq.addTarget(stillReader.getSurface());
+            stillReq.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+
+            for (int photoNum = 1; photoNum <= photoCount; photoNum++) {
+                // Run repeating preview; wait up to 3s for auto-exposure to converge
+                final CountDownLatch aeLatch = new CountDownLatch(1);
+                sessRef[0].setRepeatingRequest(previewReq.build(),
+                    new CameraCaptureSession.CaptureCallback() {
+                        @Override public void onCaptureCompleted(CameraCaptureSession session,
+                                CaptureRequest request, TotalCaptureResult result) {
+                            Integer state = result.get(CaptureResult.CONTROL_AE_STATE);
+                            if (state == null
+                                    || state == CaptureResult.CONTROL_AE_STATE_CONVERGED
+                                    || state == CaptureResult.CONTROL_AE_STATE_LOCKED
+                                    || state == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED) {
+                                aeLatch.countDown();
+                            }
+                        }
+                    }, handler);
+                aeLatch.await(3, TimeUnit.SECONDS);
+                sessRef[0].stopRepeating();
+
+                // Take still capture
+                String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
+                String today     = dateFmt.format(new Date());
+                final String fileName = today + "-" + timestamp + "-hia-alert-" + facingName + "-" + photoNum + ".jpg";
+                final File outFile    = new File(docsDir(), fileName);
+                final CountDownLatch captureLatch = new CountDownLatch(1);
+
+                stillReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                    @Override public void onImageAvailable(ImageReader r) {
+                        Image img = r.acquireLatestImage();
+                        if (img != null) {
+                            ByteBuffer buf   = img.getPlanes()[0].getBuffer();
+                            byte[]     bytes = new byte[buf.remaining()];
+                            buf.get(bytes);
+                            img.close();
+                            try {
+                                FileOutputStream fos = new FileOutputStream(outFile);
+                                fos.write(bytes); fos.close();
+                                writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
+                                int code = putFile(outFile, sessionDir + enc(fileName), auth);
+                                writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
+                            } catch (Exception e) {
+                                writeLog("Alert photo: save/upload error: " + e.getMessage());
+                            }
+                        }
+                        captureLatch.countDown();
+                    }
+                }, handler);
+
+                sessRef[0].capture(stillReq.build(), null, handler);
+                captureLatch.await(15, TimeUnit.SECONDS);
+                writeLog("Alert photos: " + facingName + " photo " + photoNum + "/" + photoCount + " done");
+
+                // Between shots: keep preview running so AE adapts to lighting conditions
+                if (photoNum < photoCount) {
+                    sessRef[0].setRepeatingRequest(previewReq.build(), null, handler);
+                    Thread.sleep(delayMs);
+                    sessRef[0].stopRepeating();
                 }
-                @Override public void onDisconnected(CameraDevice camera) {
-                    try { camera.close(); } catch (Exception ignored) {}
-                    latch.countDown();
-                }
-                @Override public void onError(CameraDevice camera, int error) {
-                    writeLog("Alert photo: camera error " + error);
-                    try { camera.close(); } catch (Exception ignored) {}
-                    latch.countDown();
-                }
-            }, handler);
-            latch.await(15, TimeUnit.SECONDS);
+            }
         } finally {
-            reader.close();
+            if (sessRef[0] != null) try { sessRef[0].close(); } catch (Exception ignored) {}
+            if (camRef[0] != null) try { camRef[0].close(); } catch (Exception ignored) {}
+            previewReader.close();
+            stillReader.close();
             ht.quitSafely();
         }
     }

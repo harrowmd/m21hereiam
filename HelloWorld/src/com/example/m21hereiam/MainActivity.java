@@ -313,6 +313,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
+        layout.addView(label("Number of alert photos (0\u20139, per camera)"));
+        final EditText editAlertPhotos = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(service.alertPhotos));
+        layout.addView(editAlertPhotos);
+
         layout.addView(label("Min satellites for map display"));
         final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.minSat));
@@ -409,6 +414,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
                     service.alertCode    = editAlertCode.getText().toString().trim();
+                    try { service.alertPhotos =
+                        Math.max(0, Math.min(9, Integer.parseInt(editAlertPhotos.getText().toString().trim()))); }
+                    catch (NumberFormatException ignored) {}
                     service.w3wBackoffTicks = 0; // allow immediate retry after settings saved
                     service.w3wFailCount    = 0;
                     service.startOnBoot  = checkBoot.isChecked();
@@ -432,6 +440,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putString (LocationService.PREF_NC_PASS,         service.nextcloudPass)
                         .putString (LocationService.PREF_SESSION,         service.session)
                         .putString (LocationService.PREF_ALERT_CODE,      service.alertCode)
+                        .putInt    (LocationService.PREF_ALERT_PHOTOS,    service.alertPhotos)
                         .putBoolean(LocationService.PREF_START_ON_BOOT,   service.startOnBoot)
                         .putInt    (LocationService.PREF_MIN_SAT,         service.minSat)
                         .putInt    (LocationService.PREF_DISPLAY_PERIOD,  service.displayPeriodHours)
