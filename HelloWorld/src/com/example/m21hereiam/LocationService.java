@@ -769,25 +769,46 @@ public class LocationService extends Service implements LocationListener {
         PowerManager.WakeLock wl = pm.newWakeLock(
             PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.ON_AFTER_RELEASE,
             "hereiamnow:alertcam");
-        wl.acquire(180000); // 3 min: 3 photos × 2 cameras × 10s delays + AE + upload overhead
+        wl.acquire(300000); // 5 min budget for all cameras
         CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
-        int[] facings = {CameraCharacteristics.LENS_FACING_FRONT, CameraCharacteristics.LENS_FACING_BACK};
-        for (int facing : facings) {
-            String facingName = (facing == CameraCharacteristics.LENS_FACING_FRONT) ? "front" : "rear";
-            try {
-                String cameraId = null;
-                for (String id : cm.getCameraIdList()) {
-                    Integer f = cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING);
-                    if (f != null && f == facing) { cameraId = id; break; }
-                }
-                if (cameraId == null) {
-                    writeLog("Alert photos: no " + facingName + " camera found");
-                    continue;
-                }
-                takeAndUploadPhotos(cm, cameraId, facingName, alertPhotos, 10000, sessionDir, auth);
-            } catch (Exception e) {
-                writeLog("Alert photos: " + facingName + " error: " + e.getMessage());
+        try {
+            String[] ids = cm.getCameraIdList();
+            writeLog("Alert photos: " + ids.length + " camera(s) found on this device");
+            // Log all cameras — diagnostic info for unknown devices
+            for (String id : ids) {
+                android.hardware.camera2.CameraCharacteristics ch = cm.getCameraCharacteristics(id);
+                Integer facing  = ch.get(CameraCharacteristics.LENS_FACING);
+                Integer hwLevel = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+                String facingStr = facing == null                                       ? "unknown"
+                    : facing == CameraCharacteristics.LENS_FACING_FRONT                ? "front"
+                    : facing == CameraCharacteristics.LENS_FACING_BACK                 ? "back"
+                    : facing == CameraCharacteristics.LENS_FACING_EXTERNAL             ? "external"
+                    : "facing-" + facing;
+                String hwStr = hwLevel == null                                                            ? "unknown"
+                    : hwLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY              ? "legacy"
+                    : hwLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED             ? "limited"
+                    : hwLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL                ? "full"
+                    : hwLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3                   ? "level3"
+                    : "hw-" + hwLevel;
+                writeLog("Alert photos: cam" + id + " facing=" + facingStr + " hw=" + hwStr);
             }
+            // Try every camera — works on unusual devices (car headunits, etc.) that lack normal front/back sensors
+            for (String id : ids) {
+                Integer facing = cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING);
+                String facingStr = facing == null                                       ? "unknown"
+                    : facing == CameraCharacteristics.LENS_FACING_FRONT                ? "front"
+                    : facing == CameraCharacteristics.LENS_FACING_BACK                 ? "back"
+                    : facing == CameraCharacteristics.LENS_FACING_EXTERNAL             ? "external"
+                    : "f" + facing;
+                String camLabel = "cam" + id + "-" + facingStr;
+                try {
+                    takeAndUploadPhotos(cm, id, camLabel, alertPhotos, 10000, sessionDir, auth);
+                } catch (Exception e) {
+                    writeLog("Alert photos: " + camLabel + " error: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            writeLog("Alert photos: camera list error: " + e.getMessage());
         }
         if (wl.isHeld()) wl.release();
     }
