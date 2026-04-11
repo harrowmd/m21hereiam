@@ -36,6 +36,9 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import java.util.Arrays;
 import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
+import java.io.ByteArrayOutputStream;
 import android.media.AudioAttributes;
 import android.media.Image;
 import android.media.ImageReader;
@@ -813,9 +816,10 @@ public class LocationService extends Service implements LocationListener {
         if (wl.isHeld()) wl.release();
     }
 
-    // Takes photoCount JPEG photos from one camera, with delayMs between shots.
-    // Before each shot, runs a short preview so the camera's auto-exposure can converge.
-    // Between shots the preview continues running so AE keeps adapting to lighting.
+    // Takes photoCount photos from one camera, with delayMs between shots.
+    // First attempts JPEG still capture. If JPEG times out on the first shot (e.g. car
+    // headunit cameras that support preview but not JPEG pipeline), switches to YUV preview
+    // fallback for all remaining shots, avoiding 15s × N wasted timeouts.
     @SuppressWarnings("deprecation")
     private void takeAndUploadPhotos(CameraManager cm, String cameraId, final String facingName,
                                       int photoCount, int delayMs,
@@ -836,8 +840,7 @@ public class LocationService extends Service implements LocationListener {
         ht.start();
         android.os.Handler handler = new android.os.Handler(ht.getLooper());
 
-        // Small preview reader — frames are discarded; exists only to give the camera an
-        // output surface so auto-exposure can run before the still capture.
+        // Preview reader — YUV frames used for AE convergence and as fallback if JPEG fails
         final ImageReader previewReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2);
         previewReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
             @Override public void onImageAvailable(ImageReader r) {
@@ -905,6 +908,8 @@ public class LocationService extends Service implements LocationListener {
             stillReq.addTarget(stillReader.getSurface());
             stillReq.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
 
+            boolean useYuvFallback = false;
+
             for (int photoNum = 1; photoNum <= photoCount; photoNum++) {
                 // Run repeating preview; wait up to 3s for auto-exposure to converge
                 final CountDownLatch aeLatch = new CountDownLatch(1);
@@ -924,37 +929,108 @@ public class LocationService extends Service implements LocationListener {
                 aeLatch.await(3, TimeUnit.SECONDS);
                 sessRef[0].stopRepeating();
 
-                // Take still capture
                 String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
                 String today     = dateFmt.format(new Date());
                 final String fileName = today + "-" + timestamp + "-hia-alert-" + facingName + "-" + photoNum + ".jpg";
                 final File outFile    = new File(docsDir(), fileName);
-                final CountDownLatch captureLatch = new CountDownLatch(1);
+                boolean photoSaved    = false;
 
-                stillReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
-                    @Override public void onImageAvailable(ImageReader r) {
-                        Image img = r.acquireLatestImage();
-                        if (img != null) {
-                            ByteBuffer buf   = img.getPlanes()[0].getBuffer();
-                            byte[]     bytes = new byte[buf.remaining()];
-                            buf.get(bytes);
-                            img.close();
-                            try {
-                                FileOutputStream fos = new FileOutputStream(outFile);
-                                fos.write(bytes); fos.close();
-                                writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
-                                int code = putFile(outFile, sessionDir + enc(fileName), auth);
-                                writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
-                            } catch (Exception e) {
-                                writeLog("Alert photo: save/upload error: " + e.getMessage());
+                // ── JPEG still capture ────────────────────────────────────────────────
+                if (!useYuvFallback) {
+                    final boolean[] jpegSaved = {false};
+                    final CountDownLatch captureLatch = new CountDownLatch(1);
+
+                    stillReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                        @Override public void onImageAvailable(ImageReader r) {
+                            Image img = r.acquireLatestImage();
+                            if (img != null) {
+                                ByteBuffer buf   = img.getPlanes()[0].getBuffer();
+                                byte[]     bytes = new byte[buf.remaining()];
+                                buf.get(bytes);
+                                img.close();
+                                if (bytes.length > 0) {
+                                    try {
+                                        FileOutputStream fos = new FileOutputStream(outFile);
+                                        fos.write(bytes); fos.close();
+                                        writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
+                                        int code = putFile(outFile, sessionDir + enc(fileName), auth);
+                                        writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
+                                        jpegSaved[0] = true;
+                                    } catch (Exception e) {
+                                        writeLog("Alert photo: save/upload error: " + e.getMessage());
+                                    }
+                                }
+                            }
+                            captureLatch.countDown();
+                        }
+                    }, handler);
+
+                    sessRef[0].capture(stillReq.build(), null, handler);
+                    captureLatch.await(15, TimeUnit.SECONDS);
+                    photoSaved = jpegSaved[0];
+
+                    if (!photoSaved) {
+                        // JPEG didn't arrive — switch all remaining photos to YUV fallback
+                        writeLog("Alert photos: " + facingName + " JPEG timeout, switching to YUV preview fallback");
+                        useYuvFallback = true;
+                    }
+                }
+
+                // ── YUV preview fallback ──────────────────────────────────────────────
+                // Used when JPEG capture pipeline is broken (common on car headunit HALs).
+                // The camera still delivers YUV frames to the preview surface — grab one
+                // and compress to JPEG in software.
+                if (useYuvFallback && !photoSaved) {
+                    final CountDownLatch yuvLatch = new CountDownLatch(1);
+                    final Image[] yuvCapture = {null};
+                    previewReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                        @Override public void onImageAvailable(ImageReader r) {
+                            Image img = r.acquireLatestImage();
+                            if (img != null) {
+                                if (yuvCapture[0] == null) {
+                                    yuvCapture[0] = img; // keep open for encoding
+                                } else {
+                                    img.close();
+                                }
+                                yuvLatch.countDown();
                             }
                         }
-                        captureLatch.countDown();
-                    }
-                }, handler);
+                    }, handler);
+                    sessRef[0].setRepeatingRequest(previewReq.build(), null, handler);
+                    yuvLatch.await(3, TimeUnit.SECONDS);
+                    sessRef[0].stopRepeating();
+                    // Restore discard listener
+                    previewReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                        @Override public void onImageAvailable(ImageReader r) {
+                            Image img = r.acquireLatestImage();
+                            if (img != null) img.close();
+                        }
+                    }, handler);
 
-                sessRef[0].capture(stillReq.build(), null, handler);
-                captureLatch.await(15, TimeUnit.SECONDS);
+                    if (yuvCapture[0] != null) {
+                        try {
+                            int imgW = yuvCapture[0].getWidth();
+                            int imgH = yuvCapture[0].getHeight();
+                            byte[] jpegBytes = yuvToJpeg(yuvCapture[0]);
+                            if (jpegBytes.length > 0) {
+                                FileOutputStream fos = new FileOutputStream(outFile);
+                                fos.write(jpegBytes); fos.close();
+                                writeLog("Alert photo: saved (YUV) " + fileName
+                                    + " (" + jpegBytes.length + " bytes, " + imgW + "x" + imgH + ")");
+                                int code = putFile(outFile, sessionDir + enc(fileName), auth);
+                                writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
+                                photoSaved = true;
+                            }
+                        } catch (Exception e) {
+                            writeLog("Alert photo: YUV encode error: " + e.getMessage());
+                        } finally {
+                            yuvCapture[0].close();
+                        }
+                    } else {
+                        writeLog("Alert photos: " + facingName + " YUV frame not available");
+                    }
+                }
+
                 writeLog("Alert photos: " + facingName + " photo " + photoNum + "/" + photoCount + " done");
 
                 // Between shots: keep preview running so AE adapts to lighting conditions
@@ -971,6 +1047,38 @@ public class LocationService extends Service implements LocationListener {
             stillReader.close();
             ht.quitSafely();
         }
+    }
+
+    // Convert a Camera2 YUV_420_888 Image to a JPEG byte array.
+    // Camera2 uses a planar format; YuvImage requires NV21 (Y + interleaved V,U).
+    private byte[] yuvToJpeg(Image image) {
+        int w = image.getWidth(), h = image.getHeight();
+        Image.Plane[] planes = image.getPlanes();
+        ByteBuffer yBuf  = planes[0].getBuffer();
+        ByteBuffer uBuf  = planes[1].getBuffer();
+        ByteBuffer vBuf  = planes[2].getBuffer();
+        int yStride  = planes[0].getRowStride();
+        int uvStride = planes[1].getRowStride();
+        int uvPixel  = planes[1].getPixelStride();
+        byte[] nv21 = new byte[w * h * 3 / 2];
+        // Copy Y plane row by row (row stride may exceed width)
+        for (int row = 0; row < h; row++) {
+            yBuf.position(row * yStride);
+            yBuf.get(nv21, row * w, Math.min(w, yBuf.remaining()));
+        }
+        // Interleave V then U into NV21 chroma plane
+        int uvOffset = w * h;
+        for (int row = 0; row < h / 2; row++) {
+            for (int col = 0; col < w / 2; col++) {
+                int i = row * uvStride + col * uvPixel;
+                nv21[uvOffset++] = vBuf.get(i);
+                nv21[uvOffset++] = uBuf.get(i);
+            }
+        }
+        YuvImage yuv = new YuvImage(nv21, ImageFormat.NV21, w, h, null);
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        yuv.compressToJpeg(new Rect(0, 0, w, h), 85, bos);
+        return bos.toByteArray();
     }
 
     private void torchOn() {
