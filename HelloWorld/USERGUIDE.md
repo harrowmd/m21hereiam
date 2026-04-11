@@ -172,6 +172,19 @@ A numeric or text code used for the remote alert feature (see
 [Section 8](#8-remote-alert-system)).
 Default: `911911`
 
+### Alert photos
+Number of photographs to take from each available camera when an alert
+fires. Default: `3`. Range: `0`–`9`.
+
+Set to `0` to disable alert photography entirely — useful on devices
+that have no accessible camera (e.g. car head units) or where the
+camera permission has not been granted.
+
+On normal Android phones each camera produces this many JPEG images.
+On devices where the camera hardware cannot be accessed through the
+standard Android Camera2 API, the app logs the failure and moves on
+without error.
+
 ### Min satellites
 The minimum number of GPS satellites required for a fix to be shown as a
 small blue dot on the map. Fixes with fewer satellites than this value are
@@ -370,7 +383,7 @@ Upload done: 4 file(s) → alice
 
 You can trigger a full alert on the phone remotely by uploading an MP3 file
 to Nextcloud. When triggered the phone plays an alarm, flashes the torch,
-vibrates, and **takes photographs** from both cameras.
+vibrates, and **takes photographs**.
 
 ### How it works
 
@@ -379,10 +392,9 @@ vibrates, and **takes photographs** from both cameras.
    ```
    hereiam/{session}/911911.mp3
    ```
-2. At the next upload interval the phone detects the file and immediately:
-   - **Takes a photograph** from the front camera.
-   - **Takes a photograph** from the rear camera.
-   - Uploads both JPEG images to the same Nextcloud session folder.
+2. At the next upload interval the phone detects the file and immediately
+   begins taking photographs from all available cameras and uploading them
+   to the same Nextcloud session folder.
 3. The phone then plays the MP3 **4 times** with 5-second pauses between
    plays. During each play:
    - The MP3 plays at **maximum alarm volume**, bypassing Do Not Disturb.
@@ -393,18 +405,28 @@ vibrates, and **takes photographs** from both cameras.
 
 ### Alert photographs
 
-Two JPEG images are captured and uploaded automatically:
+JPEG images are captured from every camera the device exposes and
+uploaded to the Nextcloud session folder. Filenames include the camera ID
+and its facing direction:
 
-| File | Camera |
-|------|--------|
-| `YYYY-MM-DD-HHmmss-hia-alert-front.jpg` | Front (selfie) camera |
-| `YYYY-MM-DD-HHmmss-hia-alert-rear.jpg` | Rear camera |
+```
+YYYY-MM-DD-HHmmss-hia-alert-cam0-back-1.jpg
+YYYY-MM-DD-HHmmss-hia-alert-cam1-front-1.jpg
+YYYY-MM-DD-HHmmss-hia-alert-cam1-front-2.jpg
+...
+```
 
-The photos are taken silently in the background so the alarm starts
-without delay. They are uploaded to the same Nextcloud session folder as
-the log files.
+The number of photos per camera is controlled by the **Alert photos**
+setting (default 3, range 0–9).
 
-The **Camera** permission must be granted when the app first opens.
+Photos are taken silently in the background so the alarm starts without
+delay. The **Camera** permission must be granted when the app first opens.
+
+> **Devices without a standard camera** (e.g. Android car head units):
+> the app will log each camera it finds and attempt to use it.
+> If no usable camera is found, it logs the result and continues normally.
+> Set **Alert photos** to `0` in Settings to skip camera access entirely
+> on such devices.
 
 ### Cancelling the alert
 
@@ -419,13 +441,17 @@ The debug log records each step:
 ```
 Alert: 911911.mp3 found, downloading
 Alert: downloaded 9030 bytes
-Alert photos: capturing front
-Alert photo: saved 2026-03-01-112233-hia-alert-front.jpg (187432 bytes)
-Alert photo: uploaded 2026-03-01-112233-hia-alert-front.jpg → HTTP 201
-Alert photos: capturing rear
-Alert photo: saved 2026-03-01-112233-hia-alert-rear.jpg (243891 bytes)
-Alert photo: uploaded 2026-03-01-112233-hia-alert-rear.jpg → HTTP 201
-Alert: playing 4 times
+Alert photos: 2 camera(s) found on this device
+Alert photos: cam0 facing=back hw=limited
+Alert photos: cam1 facing=front hw=limited
+Alert photo: saved 2026-03-01-112233-hia-alert-cam0-back-1.jpg (243891 bytes)
+Alert photo: uploaded 2026-03-01-112233-hia-alert-cam0-back-1.jpg → HTTP 201
+Alert photos: cam0-back photo 1/3 done
+...
+Alert photo: saved 2026-03-01-112233-hia-alert-cam1-front-1.jpg (187432 bytes)
+Alert photo: uploaded 2026-03-01-112233-hia-alert-cam1-front-1.jpg → HTTP 201
+Alert photos: cam1-front photo 1/3 done
+...
 Alert: playing (1/4)
 Alert: playing (2/4)
 Alert: playing (3/4)
@@ -494,9 +520,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v1.8 (9)
-Built: 2026-04-01 17:21
-Up to date (v1.8)
+Here I Am Now  v2.1 (12)
+Built: 2026-04-11 17:00
+Up to date (v2.1)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
