@@ -240,12 +240,31 @@ public class LocationService extends Service implements LocationListener {
                         if (uiListener != null) uiListener.onLapAscentUpdate(lapAscentM);
                         computeAndUpdateCourse();
                         if (uiListener != null) uiListener.onCourseUpdate(courseDeg);
+                        if (Double.isNaN(courseDeg))
+                            writeLog("Course: insufficient fixes (" + kmlLatLon.size() + " logged)");
+                        else
+                            writeLog(String.format(Locale.US, "Course: %.1f° (avg of %d bearings)",
+                                courseDeg, Math.min(3, kmlLatLon.size() - 1)));
                         if ("Marine".equals(mapType)) {
                             long now = System.currentTimeMillis();
+                            long secSinceFetch = (now - lastDepthFetchTime) / 1000;
                             if (now - lastDepthFetchTime >= MIN_DEPTH_INTERVAL_MS) {
                                 lastDepthFetchTime = now;
+                                writeLog(String.format(Locale.US,
+                                    "Depth: fetching for %.6f,%.6f", avg[0], avg[1]));
                                 depthM = fetchDepth(avg[0], avg[1]);
+                                if (Double.isNaN(depthM))
+                                    writeLog("Depth: unavailable (API error or on land)");
+                                else if (depthM == 0)
+                                    writeLog("Depth: 0 (surface / on land)");
+                                else
+                                    writeLog(String.format(Locale.US, "Depth: %.1f m", depthM));
                                 if (uiListener != null) uiListener.onDepthUpdate(depthM);
+                            } else {
+                                writeLog(String.format(Locale.US,
+                                    "Depth: skipped (%.0fs since last fetch, next in %.0fs)",
+                                    (double) secSinceFetch,
+                                    (MIN_DEPTH_INTERVAL_MS / 1000.0) - secSinceFetch));
                             }
                         }
                         saveToCsv(avg, w3w);
@@ -326,7 +345,8 @@ public class LocationService extends Service implements LocationListener {
                     + ") built " + getString(R.string.build_date);
             } catch (Exception ignored) {}
             writeLog("Service started: " + getString(R.string.app_name) + buildInfo
-                + " | Android API " + Build.VERSION.SDK_INT);
+                + " | Android API " + Build.VERSION.SDK_INT
+                + " | map=" + mapType);
             startLocationUpdates();
             logHandler.post(logTick);
             uploadHandler.postDelayed(uploadTick, uploadInterval);
@@ -370,13 +390,13 @@ public class LocationService extends Service implements LocationListener {
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
-            + " numGpsFixes=" + numGpsFixes
+            + " numGpsFixes=" + numGpsFixes + " map=" + mapType
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 
     void applySettings() {
         writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
-            + "s session=" + session + " alert=" + alertCode
+            + "s session=" + session + " alert=" + alertCode + " map=" + mapType
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
         gpsHandler.removeCallbacks(gpsRestart);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
@@ -1453,7 +1473,11 @@ public class LocationService extends Service implements LocationListener {
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
-            if (conn.getResponseCode() != 200) return Double.NaN;
+            int httpCode = conn.getResponseCode();
+            if (httpCode != 200) {
+                writeLog("Depth: HTTP " + httpCode + " from GEBCO API");
+                return Double.NaN;
+            }
             java.io.BufferedReader br = new java.io.BufferedReader(
                 new java.io.InputStreamReader(conn.getInputStream()));
             StringBuilder sb = new StringBuilder();
@@ -1463,7 +1487,10 @@ public class LocationService extends Service implements LocationListener {
             conn.disconnect();
             String json = sb.toString();
             int idx = json.indexOf("\"elevation\":");
-            if (idx < 0) return Double.NaN;
+            if (idx < 0) {
+                writeLog("Depth: could not parse elevation from GEBCO response");
+                return Double.NaN;
+            }
             int s = idx + 12;
             while (s < json.length() && json.charAt(s) == ' ') s++;
             int e = s;
@@ -1471,8 +1498,12 @@ public class LocationService extends Service implements LocationListener {
                     || json.charAt(e) == '-' || json.charAt(e) == '.')) e++;
             if (s >= e) return Double.NaN;
             double elev = Double.parseDouble(json.substring(s, e));
+            writeLog(String.format(Locale.US,
+                "Depth: GEBCO elevation=%.1f m → depth=%s",
+                elev, elev < 0 ? String.format(Locale.US, "%.1f m", -elev) : "0 (above sea level)"));
             return elev < 0 ? -elev : 0.0;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            writeLog("Depth: fetch error — " + e.getMessage());
             return Double.NaN;
         }
     }
