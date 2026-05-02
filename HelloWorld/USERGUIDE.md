@@ -70,15 +70,27 @@ current coordinates. This keeps the background service alive.
 
 ## 3. Data Overlay
 
-A semi-transparent bar at the bottom of the screen shows live data.
-The three columns are updated at each **Update interval**:
+A semi-transparent bar at the bottom of the screen shows live data updated
+at each **Update interval**. The fields shown depend on the **Map type**
+setting.
+
+### Land mode (default)
 
 | Left column | Centre column | Right column (right-justified) |
 |-------------|---------------|-------------------------------|
 | `Dist: X.XX km` | Latitude | "What3Words" |
 | `Speed: X.X km/h` | Longitude | word 1 |
-| `Ascent: X m` | Altitude (m, integer) | word 2 |
-| Satellites in fix | Accuracy (m, integer) | word 3 |
+| `Ascent: X m` | Altitude (m) | word 2 |
+| Satellites in fix | Accuracy (m) | word 3 |
+
+### Marine mode
+
+| Left column | Centre column | Right column (right-justified) |
+|-------------|---------------|-------------------------------|
+| `Dist: X.XX km` | Latitude | "What3Words" |
+| `Speed: X.X km/h` | Longitude | word 1 |
+| `Course: XXX°` | Depth (m) | word 2 |
+| Satellites in fix | Accuracy (m) | word 3 |
 
 ### Dist (distance)
 Total distance in kilometres between consecutive GPS fixes recorded within
@@ -89,10 +101,24 @@ Resets when the service is restarted or when the display period rolls over.
 Average speed over the display period: **Dist ÷ Display period (hours)**,
 shown in km/h. This is a session-average speed, not instantaneous speed.
 
-### Ascent
+### Ascent *(Land mode only)*
 Cumulative altitude climbed (metres) within the display period. Only upward
 altitude changes of 5 m or more are counted, filtering out GPS altitude noise.
 Descents are ignored.
+
+### Alt *(Land mode only)*
+Altitude above sea level in metres, from the current GPS fix.
+
+### Course *(Marine mode only)*
+Average bearing in degrees (000°–360°) computed from the last four logged GPS
+positions using vector-averaged bearings. Shows `--` until at least two
+positions have been logged.
+
+### Depth *(Marine mode only)*
+Sea depth in metres, fetched from the GEBCO global bathymetric dataset via
+[opentopodata.org](https://api.opentopodata.org). Fetched at most once every
+15 minutes to respect the public API rate limit. Shows `--` on land, in
+shallow waters with no data, or when the lookup is unavailable.
 
 > Battery percentage is **not** shown on screen but is still recorded in the
 > log files at every GPS fix.
@@ -120,8 +146,12 @@ The blue location dot moves independently of the map centre — if you pan
 away to look at another area, the dot continues to show your real position.
 Tap ⊕ to return the view to your location.
 
-Map tiles are fetched from **OpenStreetMap** over the internet and cached
-while the app is running.
+**Auto-recentre:** while the app is in the foreground, the map automatically
+snaps back to your position whenever the GPS dot comes within 10% of any
+screen edge. This keeps you on screen without any manual interaction.
+
+Map tiles are fetched from **OpenStreetMap** (and **OpenSeaMap** in Marine
+mode) over the internet and cached while the app is running.
 
 **Pinch zoom tile loading:** while your fingers are on the screen the
 existing map tiles scale smoothly. New higher-resolution tiles are only
@@ -198,8 +228,8 @@ How far back in time the map trail of small blue dots extends.
 Default: `12` hours.
 
 This setting also defines the time window used to calculate **Dist**,
-**Speed**, and **Ascent** in the data overlay. Changing this value and
-tapping **Save** updates the map and all three figures immediately.
+**Speed**, **Ascent**, and **Course** in the data overlay. Changing this
+value and tapping **Save** updates the map and all figures immediately.
 
 ### Num GPS fixes
 How many GPS samples to collect and average for each logged position.
@@ -230,6 +260,21 @@ Default: `None` (no line, dots only).
 
 The line is drawn beneath the dots so the dots remain clearly visible.
 The selected colour is saved and restored when the app restarts.
+
+### Map type
+Controls the map tile source and the data overlay fields.
+
+| Option | Map tiles | Data overlay |
+|--------|-----------|--------------|
+| **Land** (default) | OpenStreetMap only | Ascent + Alt |
+| **Marine** | OSM base + OpenSeaMap nautical overlay | Course + Depth |
+
+In **Marine** mode a transparent nautical layer from
+[OpenSeaMap](https://www.openseamap.org) is rendered on top of the standard
+OSM base map, adding buoys, lights, depth contours, harbour marks, and other
+seamarks. The data overlay switches to show **Course** (average bearing from
+the last four GPS fixes) and **Depth** (GEBCO bathymetric data, fetched at
+most every 15 minutes).
 
 ### Log file retention (days)
 How many days of log files to keep, both on the device and on Nextcloud.
@@ -284,7 +329,7 @@ folder (`Internal Storage / Documents`):
 
 | File | Format | Contents |
 |------|--------|----------|
-| `YYYY-MM-DD-hia.csv` | CSV | One row per GPS fix: timestamp, lat, lon, alt, accuracy, satellites, battery, What3Words link |
+| `YYYY-MM-DD-hia.csv` | CSV | One row per GPS fix — 15 columns including position, derived metrics, and What3Words |
 | `YYYY-MM-DD-hia.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
 | `YYYY-MM-DD-hia.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
 | `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log, including What3Words lookup results |
@@ -296,13 +341,32 @@ and Nextcloud.
 ### CSV format
 
 ```
-timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct,what3words
-2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,-149.0,16.1,6,100,https://w3w.co/word1.word2.word3
+timestamp,date,time,latitude,longitude,distance_km,speed_kmh,course_deg,depth_m,altitude_m,ascent_m,accuracy_m,satellites,battery_pct,what3words
+2026-02-28 14:18:40,2026-02-28,14:18:40,51.444040,0.143970,1.24,0.1,247.3,,42.0,8.5,5.2,7,85,https://w3w.co/word1.word2.word3
 ```
 
-The `what3words` column contains a clickable link in the format
-`https://w3w.co/word1.word2.word3`. The cell is empty if the lookup failed
-or has not yet completed for that fix.
+| Column | Description |
+|--------|-------------|
+| `timestamp` | Full date and time of the fix (`YYYY-MM-DD HH:MM:SS`) |
+| `date` | Date only |
+| `time` | Time only |
+| `latitude` | Decimal degrees |
+| `longitude` | Decimal degrees |
+| `distance_km` | Cumulative distance within the display period (km) |
+| `speed_kmh` | Average speed over the display period (km/h) |
+| `course_deg` | Average bearing in degrees (000–360); empty until 2 fixes logged |
+| `depth_m` | Sea depth from GEBCO (m); empty on land or if unavailable |
+| `altitude_m` | GPS altitude above sea level (m) |
+| `ascent_m` | Cumulative ascent within the display period (m) |
+| `accuracy_m` | GPS horizontal accuracy (m) |
+| `satellites` | Number of satellites used in fix |
+| `battery_pct` | Battery percentage |
+| `what3words` | `https://w3w.co/word1.word2.word3` link; empty if lookup failed |
+
+The `course_deg` and `depth_m` columns are populated in Marine mode; they
+are empty (but present) in Land mode. All derived columns (`distance_km`,
+`speed_kmh`, `course_deg`, `ascent_m`) reflect values computed at the time
+of the fix after the previous interval's data was processed.
 
 ### GPX format
 
@@ -520,9 +584,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v2.1 (12)
-Built: 2026-04-11 17:00
-Up to date (v2.1)
+Here I Am Now  v2.2 (13)
+Built: 2026-05-02 18:09
+Up to date (v2.2)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
