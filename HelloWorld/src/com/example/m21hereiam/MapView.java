@@ -45,8 +45,12 @@ public class MapView extends View {
     private boolean isDragging  = false;
     private boolean isPinching  = false;
 
-    private final ConcurrentHashMap<String, Bitmap>  tileCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> inFlight  = new ConcurrentHashMap<>();
+    private String mapType = "Land";
+
+    private final ConcurrentHashMap<String, Bitmap>  tileCache    = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> inFlight     = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Bitmap>  overlayCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> overlayFlight = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
     private final android.os.Handler tileHandler = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -205,6 +209,14 @@ public class MapView extends View {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
+    public void setMapType(String type) {
+        mapType = type;
+        overlayCache.clear();
+        overlayFlight.clear();
+        prefetchTiles();
+        postInvalidate();
+    }
+
     public void recentre() {
         centerLat = gpsLat;
         centerLon = gpsLon;
@@ -219,10 +231,38 @@ public class MapView extends View {
             // First fix: centre the map on the GPS position
             this.centerLat = lat;
             this.centerLon = lon;
+        } else {
+            autoRecentreIfNearEdge();
         }
         this.hasLocation = true;
         prefetchTiles();
         postInvalidate();
+    }
+
+    private void autoRecentreIfNearEdge() {
+        int W = getWidth();
+        int H = getHeight();
+        if (W == 0 || H == 0) return;
+
+        float scaledTile = TILE_SIZE * displayScale;
+        int   cx = tileX(centerLon, zoom);
+        int   cy = tileY(centerLat, zoom);
+        float px = (float) pixelXInTile(centerLon, zoom) * displayScale;
+        float py = (float) pixelYInTile(centerLat, zoom) * displayScale;
+
+        float gpsTileX = (float) ((tileX(gpsLon, zoom) + pixelXInTile(gpsLon, zoom) / TILE_SIZE)
+                                  - (cx + (double) px / scaledTile));
+        float gpsTileY = (float) ((tileY(gpsLat, zoom) + pixelYInTile(gpsLat, zoom) / TILE_SIZE)
+                                  - (cy + (double) py / scaledTile));
+        float mx = W / 2f + gpsTileX * scaledTile;
+        float my = H / 2f + gpsTileY * scaledTile;
+
+        float margin = 0.1f;
+        if (mx < W * margin || mx > W * (1 - margin)
+                || my < H * margin || my > H * (1 - margin)) {
+            centerLat = gpsLat;
+            centerLon = gpsLon;
+        }
     }
 
     // ── Tile math ─────────────────────────────────────────────────────────────
@@ -263,6 +303,8 @@ public class MapView extends View {
                 int ty = cy + dy;
                 if (ty < 0 || ty > maxTile) continue;
                 fetchTile(zoom, wrapX(cx + dx, zoom), ty);
+                if ("Marine".equals(mapType))
+                    fetchOverlayTile(zoom, wrapX(cx + dx, zoom), ty);
             }
         }
     }
@@ -289,6 +331,33 @@ public class MapView extends View {
                 } catch (IOException ignored) {
                 } finally {
                     inFlight.remove(key);
+                }
+            }
+        });
+    }
+
+    private void fetchOverlayTile(final int z, final int x, final int y) {
+        final String key = z + "/" + x + "/" + y;
+        if (overlayCache.containsKey(key) || overlayFlight.containsKey(key)) return;
+        overlayFlight.put(key, Boolean.TRUE);
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    URL url = new URL("https://tiles.openseamap.org/seamark/" + key + ".png");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(10000);
+                    InputStream is = conn.getInputStream();
+                    Bitmap bmp = BitmapFactory.decodeStream(is);
+                    is.close();
+                    if (bmp != null) {
+                        overlayCache.put(key, bmp);
+                        postInvalidate();
+                    }
+                } catch (IOException ignored) {
+                } finally {
+                    overlayFlight.remove(key);
                 }
             }
         });
@@ -339,6 +408,15 @@ public class MapView extends View {
                 } else {
                     canvas.drawRect(tileRect, placeholderPaint);
                     if (!isPinching) fetchTile(zoom, tx, ty);
+                }
+
+                if ("Marine".equals(mapType)) {
+                    Bitmap overlay = overlayCache.get(key);
+                    if (overlay != null) {
+                        canvas.drawBitmap(overlay, null, tileRect, tilePaint);
+                    } else if (!isPinching) {
+                        fetchOverlayTile(zoom, tx, ty);
+                    }
                 }
             }
         }

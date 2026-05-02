@@ -93,6 +93,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_W3W_KEY         = "w3w_api_key";
     static final String PREF_TRACK_COLOUR    = "track_colour";
     static final String PREF_RETENTION_DAYS  = "retention_days";
+    static final String PREF_MAP_TYPE        = "map_type";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -121,9 +122,14 @@ public class LocationService extends Service implements LocationListener {
     String  w3wApiKey          = "";
     String  trackColour        = "None";
     int     retentionDays      = 31;
+    String  mapType            = "Land";
     volatile String w3wAddress = "";
-    volatile int w3wBackoffTicks = 0;  // ticks to skip before next attempt
-    volatile int w3wFailCount    = 0;  // consecutive failures; reset on success
+    volatile int    w3wBackoffTicks = 0;
+    volatile int    w3wFailCount    = 0;
+    volatile double courseDeg = Double.NaN;
+    volatile double depthM    = Double.NaN;
+    private  long   lastDepthFetchTime = 0;
+    private static final long MIN_DEPTH_INTERVAL_MS = 15 * 60 * 1000L;
 
     // Rolling buffer of recent GPS fixes for averaging: {lat, lon, alt, accuracy}
     private final java.util.List<double[]> fixBuffer = new java.util.ArrayList<>();
@@ -148,6 +154,8 @@ public class LocationService extends Service implements LocationListener {
         void onW3wUpdate(String words);
         void onLapDistanceUpdate(double km);
         void onLapAscentUpdate(double m);
+        void onCourseUpdate(double degrees);
+        void onDepthUpdate(double metres);
     }
 
     private Listener uiListener;
@@ -224,13 +232,23 @@ public class LocationService extends Service implements LocationListener {
                         }
                         w3wAddress = w3w;
                         if (!w3w.isEmpty() && uiListener != null) uiListener.onW3wUpdate(w3w);
-                        saveToCsv(avg, w3w);
                         saveToGpx(avg);
                         saveToKml(avg);
                         lapDistanceKm = computeLapDistance();
                         if (uiListener != null) uiListener.onLapDistanceUpdate(lapDistanceKm);
                         lapAscentM = computeLapAscent();
                         if (uiListener != null) uiListener.onLapAscentUpdate(lapAscentM);
+                        computeAndUpdateCourse();
+                        if (uiListener != null) uiListener.onCourseUpdate(courseDeg);
+                        if ("Marine".equals(mapType)) {
+                            long now = System.currentTimeMillis();
+                            if (now - lastDepthFetchTime >= MIN_DEPTH_INTERVAL_MS) {
+                                lastDepthFetchTime = now;
+                                depthM = fetchDepth(avg[0], avg[1]);
+                                if (uiListener != null) uiListener.onDepthUpdate(depthM);
+                            }
+                        }
+                        saveToCsv(avg, w3w);
                     }
                 }).start();
             } else {
@@ -348,6 +366,7 @@ public class LocationService extends Service implements LocationListener {
         w3wApiKey          = p.getString (PREF_W3W_KEY,         "");
         trackColour        = p.getString (PREF_TRACK_COLOUR,    "None");
         retentionDays      = p.getInt    (PREF_RETENTION_DAYS,  31);
+        mapType            = p.getString (PREF_MAP_TYPE,         "Land");
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
@@ -1165,19 +1184,54 @@ public class LocationService extends Service implements LocationListener {
         return new double[]{lat / k, lon / k, alt / k, acc / k};
     }
 
+    private static final String CSV_HEADER =
+        "timestamp,date,time,latitude,longitude,distance_km,speed_kmh,"
+      + "course_deg,depth_m,altitude_m,ascent_m,accuracy_m,"
+      + "satellites,battery_pct,what3words";
+
     private void saveToCsv(double[] avg, String w3w) {
         File dir  = docsDir();
         Date now  = new Date();
         File file = new File(dir, dateFmt.format(now) + "-hia.csv");
         boolean isNew = !file.exists();
+
+        // Upgrade old-format header in-place (one-time cost per file)
+        if (!isNew) {
+            try {
+                java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(file));
+                String firstLine = br.readLine();
+                if (firstLine != null && !firstLine.contains("distance_km")) {
+                    java.util.List<String> rest = new java.util.ArrayList<>();
+                    String line;
+                    while ((line = br.readLine()) != null) rest.add(line);
+                    br.close();
+                    FileWriter fw2 = new FileWriter(file, false);
+                    fw2.write(CSV_HEADER + "\n");
+                    for (String l : rest) fw2.write(l + "\n");
+                    fw2.close();
+                } else {
+                    br.close();
+                }
+            } catch (IOException e) {
+                writeLog("CSV header upgrade error: " + e.getMessage());
+            }
+        }
+
         try {
             FileWriter fw = new FileWriter(file, true);
             if (isNew)
-                fw.write("timestamp,date,time,latitude,longitude,altitude_m,accuracy_m,satellites,battery_pct,what3words\n");
-            String w3wUrl = w3w.isEmpty() ? "" : "https://w3w.co/" + w3w;
-            fw.write(String.format(Locale.US, "%s,%s,%s,%.6f,%.6f,%.1f,%.1f,%d,%d,%s\n",
+                fw.write(CSV_HEADER + "\n");
+            double speedKmh = displayPeriodHours > 0 ? lapDistanceKm / displayPeriodHours : 0;
+            String courseStr = Double.isNaN(courseDeg) ? "" : String.format(Locale.US, "%.1f", courseDeg);
+            String depthStr  = (Double.isNaN(depthM) || depthM == 0) ? "" : String.format(Locale.US, "%.1f", depthM);
+            String w3wVal    = w3w.isEmpty() ? "" : "https://w3w.co/" + w3w;
+            fw.write(String.format(Locale.US,
+                "%s,%s,%s,%.6f,%.6f,%.2f,%.1f,%s,%s,%.1f,%.1f,%.1f,%d,%d,%s\n",
                 tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
-                avg[0], avg[1], avg[2], avg[3], csvSatellites, csvBattery, w3wUrl));
+                avg[0], avg[1],
+                lapDistanceKm, speedKmh, courseStr, depthStr,
+                avg[2], lapAscentM, avg[3],
+                csvSatellites, csvBattery, w3wVal));
             fw.close();
             writeLog("Saved CSV: " + file.getName() + " (" + file.length() + " bytes)");
         } catch (IOException e) {
@@ -1280,14 +1334,21 @@ public class LocationService extends Service implements LocationListener {
             java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(csv));
             String line;
             boolean header = true;
+            boolean newFormat = false;
             while ((line = br.readLine()) != null) {
-                if (header) { header = false; continue; }
-                String[] cols = line.split(",");
-                if (cols.length < 6) continue;
+                if (header) {
+                    // new format has 15 cols; old has 10
+                    newFormat = line.contains("distance_km");
+                    header = false;
+                    continue;
+                }
+                String[] cols = line.split(",", -1);
+                int altCol = newFormat ? 9 : 5;
+                if (cols.length <= altCol) continue;
                 try {
                     double lat = Double.parseDouble(cols[3]);
                     double lon = Double.parseDouble(cols[4]);
-                    double alt = Double.parseDouble(cols[5]);
+                    double alt = Double.parseDouble(cols[altCol]);
                     kmlTimestamps.add(cols[0]);
                     kmlLatLon.add(new double[]{lat, lon});
                     lapAltitudes.add(alt);
@@ -1355,6 +1416,65 @@ public class LocationService extends Service implements LocationListener {
             } catch (Exception ignored) {}
         }
         return total;
+    }
+
+    // ── Course and depth ──────────────────────────────────────────────────────
+
+    private void computeAndUpdateCourse() {
+        int size = kmlLatLon.size();
+        if (size < 2) { courseDeg = Double.NaN; return; }
+        int n = Math.min(4, size);
+        int start = size - n;
+        double sinSum = 0, cosSum = 0;
+        int count = 0;
+        for (int i = start; i < size - 1; i++) {
+            double[] a = kmlLatLon.get(i);
+            double[] b = kmlLatLon.get(i + 1);
+            double lat1 = Math.toRadians(a[0]), lat2 = Math.toRadians(b[0]);
+            double dlon = Math.toRadians(b[1] - a[1]);
+            double y = Math.sin(dlon) * Math.cos(lat2);
+            double x = Math.cos(lat1) * Math.sin(lat2)
+                     - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dlon);
+            double bearing = Math.toDegrees(Math.atan2(y, x));
+            sinSum += Math.sin(Math.toRadians(bearing));
+            cosSum += Math.cos(Math.toRadians(bearing));
+            count++;
+        }
+        if (count == 0) { courseDeg = Double.NaN; return; }
+        double avg = Math.toDegrees(Math.atan2(sinSum / count, cosSum / count));
+        courseDeg = (avg + 360) % 360;
+    }
+
+    private double fetchDepth(double lat, double lon) {
+        try {
+            String urlStr = String.format(Locale.US,
+                "https://api.opentopodata.org/v1/gebco2020?locations=%.6f,%.6f", lat, lon);
+            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
+            if (conn.getResponseCode() != 200) return Double.NaN;
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(conn.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+            conn.disconnect();
+            String json = sb.toString();
+            int idx = json.indexOf("\"elevation\":");
+            if (idx < 0) return Double.NaN;
+            int s = idx + 12;
+            while (s < json.length() && json.charAt(s) == ' ') s++;
+            int e = s;
+            while (e < json.length() && (Character.isDigit(json.charAt(e))
+                    || json.charAt(e) == '-' || json.charAt(e) == '.')) e++;
+            if (s >= e) return Double.NaN;
+            double elev = Double.parseDouble(json.substring(s, e));
+            return elev < 0 ? -elev : 0.0;
+        } catch (Exception ignored) {
+            return Double.NaN;
+        }
     }
 
     // ── What3Words lookup (web scrape) ────────────────────────────────────────

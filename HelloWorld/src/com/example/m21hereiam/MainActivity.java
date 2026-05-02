@@ -62,6 +62,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
             mapView.setTrackColour(service.trackColour);
+            mapView.setMapType(service.mapType);
+            if ("Marine".equals(service.mapType)) {
+                tvAscent.setText(Double.isNaN(service.courseDeg) ? "Course: --"
+                    : String.format("Course: %03.0f°", service.courseDeg));
+                tvAlt.setText((Double.isNaN(service.depthM) || service.depthM == 0) ? "Depth: --"
+                    : String.format("Depth: %.0f m", service.depthM));
+            }
             // Restore Cancel Alert button if alert was already active
             if (service.alertActive)
                 btnCancelAlert.setVisibility(View.VISIBLE);
@@ -150,9 +157,14 @@ public class MainActivity extends Activity implements LocationService.Listener {
                                  final double alt, final float acc) {
         runOnUiThread(new Runnable() {
             @Override public void run() {
-                tvLat.setText(String.format("Lat: %.6f",          lat));
-                tvLon.setText(String.format("Lon: %.6f",          lon));
-                tvAlt.setText(String.format("Alt: %.0f m",        alt));
+                tvLat.setText(String.format("Lat: %.6f", lat));
+                tvLon.setText(String.format("Lon: %.6f", lon));
+                if (bound && "Marine".equals(service.mapType)) {
+                    if (!tvAlt.getText().toString().startsWith("Depth"))
+                        tvAlt.setText("Depth: --");
+                } else {
+                    tvAlt.setText(String.format("Alt: %.0f m", alt));
+                }
                 tvAccuracy.setText(String.format("Accuracy: %.0f m", acc));
                 mapView.setLocation(lat, lon);
             }
@@ -189,7 +201,33 @@ public class MainActivity extends Activity implements LocationService.Listener {
     public void onLapAscentUpdate(final double m) {
         runOnUiThread(new Runnable() {
             @Override public void run() {
+                if (bound && "Marine".equals(service.mapType)) return;
                 tvAscent.setText(String.format("Ascent: %.0f m", m));
+            }
+        });
+    }
+
+    @Override
+    public void onCourseUpdate(final double degrees) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (!bound || !"Marine".equals(service.mapType)) return;
+                if (Double.isNaN(degrees))
+                    tvAscent.setText("Course: --");
+                else
+                    tvAscent.setText(String.format("Course: %03.0f°", degrees));
+            }
+        });
+    }
+
+    @Override
+    public void onDepthUpdate(final double metres) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (Double.isNaN(metres) || metres == 0)
+                    tvAlt.setText("Depth: --");
+                else
+                    tvAlt.setText(String.format("Depth: %.0f m", metres));
             }
         });
     }
@@ -348,6 +386,16 @@ public class MainActivity extends Activity implements LocationService.Listener {
         }
         layout.addView(spinnerTrackColour);
 
+        layout.addView(label("Map type"));
+        final String[] mapTypes = {"Land (OpenStreetMap)", "Marine (OpenSeaMap overlay)"};
+        final android.widget.Spinner spinnerMapType = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<String> mapTypeAdapter = new android.widget.ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, mapTypes);
+        mapTypeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerMapType.setAdapter(mapTypeAdapter);
+        spinnerMapType.setSelection("Marine".equals(service.mapType) ? 1 : 0);
+        layout.addView(spinnerMapType);
+
         final CheckBox checkBoot = new CheckBox(this);
         checkBoot.setText("Start on bootup");
         checkBoot.setChecked(service.startOnBoot);
@@ -428,6 +476,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     catch (NumberFormatException ignored) {}
                     service.trackColour = trackColours[spinnerTrackColour.getSelectedItemPosition()];
                     mapView.setTrackColour(service.trackColour);
+                    service.mapType = spinnerMapType.getSelectedItemPosition() == 1 ? "Marine" : "Land";
+                    mapView.setMapType(service.mapType);
                     try { service.retentionDays =
                         Math.max(1, Integer.parseInt(editRetention.getText().toString().trim())); }
                     catch (NumberFormatException ignored) {}
@@ -447,6 +497,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_NUM_GPS_FIXES,   service.numGpsFixes)
                         .putString (LocationService.PREF_TRACK_COLOUR,    service.trackColour)
                         .putInt    (LocationService.PREF_RETENTION_DAYS,  service.retentionDays)
+                        .putString (LocationService.PREF_MAP_TYPE,         service.mapType)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters
@@ -475,15 +526,26 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "Files are uploaded to your Nextcloud server every <i>Upload interval</i> seconds. "
             + "The map shows your current position as a solid blue dot and recent track history "
             + "as smaller dots, filtered by <i>Min satellites</i> and <i>Display period</i>. "
-            + "An optional coloured line can be drawn connecting the dots.<br><br>"
+            + "An optional coloured line can be drawn connecting the dots. "
+            + "While the app is in the foreground, the map auto-recentres whenever the GPS dot "
+            + "comes within 10% of any screen edge.<br><br>"
 
-            + "<b>Data overlay</b><br>"
+            + "<b>Data overlay — Land mode</b><br>"
             + "<b>Dist</b> — Total distance (km) between GPS fixes within the display period.<br>"
             + "<b>Speed</b> — Average speed over the display period (Dist &divide; hours), in km/h.<br>"
             + "<b>Ascent</b> — Cumulative altitude climbed (m) within the display period. "
             + "Only gains of 5 m or more per step are counted to filter GPS altitude noise.<br>"
+            + "<b>Alt</b> — Altitude above sea level (m) from the GPS fix.<br>"
             + "<b>Satellites</b> — Number of GPS satellites currently used in fix.<br>"
             + "Battery percentage is recorded in log files but not shown on screen.<br><br>"
+
+            + "<b>Data overlay — Marine mode</b><br>"
+            + "In Marine mode two fields change:<br>"
+            + "<b>Course</b> (replaces Ascent) — Average bearing in degrees (000&#176;&#8211;360&#176;) "
+            + "computed from the last four logged GPS positions. Shows &#39;--&#39; until two fixes are available.<br>"
+            + "<b>Depth</b> (replaces Alt) — Sea depth in metres from GEBCO global bathymetric data "
+            + "(via opentopodata.org). Fetched at most once every 15 minutes to respect rate limits. "
+            + "Shows &#39;--&#39; on land or when unavailable.<br><br>"
 
             + "<b>Settings</b><br>"
             + "<b>Session name</b> — Nextcloud subfolder for this device&#39;s files. "
@@ -500,6 +562,9 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "Dist, Speed, and Ascent. Default: 12 h.<br>"
             + "<b>Track colour</b> — Line drawn between GPS dots on the map. "
             + "Options: None (default), Blue, Red, Yellow, Black.<br>"
+            + "<b>Map type</b> — <i>Land</i> shows OpenStreetMap tiles. "
+            + "<i>Marine</i> adds an OpenSeaMap nautical overlay (buoys, lights, seamarks) on top of OSM, "
+            + "and switches the data overlay to show Course and Depth instead of Ascent and Alt.<br>"
             + "<b>Start on bootup</b> — Start automatically when the phone switches on.<br><br>"
 
             + "<b>Remote Alert</b><br>"
@@ -509,8 +574,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "torch flashing and phone vibrating. Tap <b>Cancel Alert</b> to stop. "
             + "The trigger file is renamed to <i>YYYY-MM-DD-{alert code}.mp3</i> as a timestamped record.<br><br>"
 
-            + "<b>Log files</b> (Documents folder, 30-day auto-delete)<br>"
-            + "YYYY-MM-DD-hia.csv — one row per GPS fix<br>"
+            + "<b>Log files</b> (Documents folder, auto-deleted after retention period)<br>"
+            + "YYYY-MM-DD-hia.csv — one row per GPS fix, columns:<br>"
+            + "&nbsp;&nbsp;timestamp, date, time, latitude, longitude,<br>"
+            + "&nbsp;&nbsp;distance_km, speed_kmh, course_deg, depth_m,<br>"
+            + "&nbsp;&nbsp;altitude_m, ascent_m, accuracy_m, satellites, battery_pct, what3words<br>"
             + "YYYY-MM-DD-hia.gpx — GPX 1.1 track<br>"
             + "YYYY-MM-DD-hia.kml — KML track with waypoints<br>"
             + "YYYY-MM-DD-hia.txt — debug and status log<br><br>"
@@ -790,14 +858,20 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         BufferedReader br = new BufferedReader(new FileReader(f));
                         String line;
                         boolean header = true;
+                        boolean newFmt = false;
                         while ((line = br.readLine()) != null) {
-                            if (header) { header = false; continue; }
-                            String[] cols = line.split(",");
-                            if (cols.length < 8) continue;
+                            if (header) {
+                                newFmt = line.contains("distance_km");
+                                header = false;
+                                continue;
+                            }
+                            String[] cols = line.split(",", -1);
+                            int satCol = newFmt ? 12 : 7;
+                            if (cols.length <= satCol) continue;
                             try {
                                 Date ts = tsFmt.parse(cols[0]);
                                 if (ts == null || ts.getTime() < cutoff) continue;
-                                int sats = Integer.parseInt(cols[7]);
+                                int sats = Integer.parseInt(cols[satCol]);
                                 if (sats < minSat) continue;
                                 double lat = Double.parseDouble(cols[3]);
                                 double lon = Double.parseDouble(cols[4]);
