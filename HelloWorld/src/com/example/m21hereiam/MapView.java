@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
@@ -24,6 +25,15 @@ import java.util.concurrent.Executors;
 
 public class MapView extends View {
 
+    public static class PoiMarker {
+        public final double lat, lon;
+        public final String name;
+        public final int    color;
+        public PoiMarker(double lat, double lon, String name, int color) {
+            this.lat = lat; this.lon = lon; this.name = name; this.color = color;
+        }
+    }
+
     private static final int TILE_SIZE  = 256;
     private static final int MIN_ZOOM   = 1;
     private static final int MAX_ZOOM   = 19;
@@ -40,6 +50,11 @@ public class MapView extends View {
     private boolean hasLocation   = false;
     private boolean autoRecentre = true;
     private int     bottomInset  = 0;   // height of bottom data bar in px
+
+    private List<PoiMarker> poiMarkers = new ArrayList<>();
+
+    // Tap-start position (to distinguish tap from drag)
+    private float downX = 0, downY = 0;
 
     // Pan gesture state
     private float   lastTouchX  = 0;
@@ -70,6 +85,8 @@ public class MapView extends View {
     private final Paint trackDotPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint trackLinePaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
     private int         trackLineColor   = 0; // 0 = no line (None)
+    private final Paint poiFill          = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint poiBorder        = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private final RectF tileRect = new RectF();
 
@@ -100,6 +117,11 @@ public class MapView extends View {
         trackLinePaint.setStyle(Paint.Style.STROKE);
         trackLinePaint.setStrokeWidth(2f);
         trackLinePaint.setAlpha(180);
+
+        poiFill.setStyle(Paint.Style.FILL);
+        poiBorder.setStyle(Paint.Style.STROKE);
+        poiBorder.setColor(Color.WHITE);
+        poiBorder.setStrokeWidth(2.5f);
     }
 
     /** Set the track line colour. Accepted values: "Blue","Red","Yellow","Black","None". */
@@ -161,6 +183,8 @@ public class MapView extends View {
             case MotionEvent.ACTION_DOWN:
                 lastTouchX = event.getX();
                 lastTouchY = event.getY();
+                downX = event.getX();
+                downY = event.getY();
                 isDragging = true;
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -183,6 +207,12 @@ public class MapView extends View {
                 }
                 break;
             case MotionEvent.ACTION_UP:
+                isDragging = false;
+                float upX = event.getX();
+                float upY = event.getY();
+                if ((float) Math.hypot(upX - downX, upY - downY) < 20f && hasLocation)
+                    checkPoiTap(upX, upY);
+                break;
             case MotionEvent.ACTION_CANCEL:
                 isDragging = false;
                 break;
@@ -207,6 +237,61 @@ public class MapView extends View {
 
         prefetchTiles();
         invalidate();
+    }
+
+    private void checkPoiTap(float tapX, float tapY) {
+        if (poiMarkers.isEmpty()) return;
+        float scaledTile = TILE_SIZE * displayScale;
+        int W = getWidth(), H = getHeight();
+        int cx = tileX(centerLon, zoom);
+        int cy = tileY(centerLat, zoom);
+        float px = (float) pixelXInTile(centerLon, zoom) * displayScale;
+        float py = (float) pixelYInTile(centerLat, zoom) * displayScale;
+
+        float bestDist = 35f;
+        PoiMarker best = null;
+        for (PoiMarker poi : poiMarkers) {
+            float ptx = (float)((tileX(poi.lon, zoom) + pixelXInTile(poi.lon, zoom) / TILE_SIZE)
+                                 - (cx + (double) px / scaledTile));
+            float pty = (float)((tileY(poi.lat, zoom) + pixelYInTile(poi.lat, zoom) / TILE_SIZE)
+                                 - (cy + (double) py / scaledTile));
+            float sx = W / 2f + ptx * scaledTile;
+            float sy = H / 2f + pty * scaledTile;
+            float d = (float) Math.hypot(tapX - sx, tapY - sy);
+            if (d < bestDist) { bestDist = d; best = poi; }
+        }
+        if (best != null) {
+            float distM = haversineMetres(gpsLat, gpsLon, best.lat, best.lon);
+            String label = best.name + " — " + (distM < 1000
+                ? String.format("%.0f m", distM)
+                : String.format("%.1f km", distM / 1000));
+            android.widget.Toast.makeText(getContext(), label,
+                android.widget.Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private Path starPath(float cx, float cy, float outerR, float innerR) {
+        Path path = new Path();
+        double step = Math.PI / 5; // 36° per point (10 vertices total)
+        for (int i = 0; i < 10; i++) {
+            double angle = -Math.PI / 2 + i * step;
+            float r = (i % 2 == 0) ? outerR : innerR;
+            float x = cx + (float)(r * Math.cos(angle));
+            float y = cy + (float)(r * Math.sin(angle));
+            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        path.close();
+        return path;
+    }
+
+    private float haversineMetres(double lat1, double lon1, double lat2, double lon2) {
+        double R = 6371000;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                 + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                 * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return (float)(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -242,6 +327,15 @@ public class MapView extends View {
     }
 
     public void setBottomInset(int px) { bottomInset = px; }
+
+    public void setPoiMarkers(List<PoiMarker> markers) {
+        poiMarkers = new ArrayList<>(markers);
+        postInvalidate();
+    }
+
+    public boolean hasGpsLocation() { return hasLocation; }
+    public double  getGpsLat()      { return gpsLat; }
+    public double  getGpsLon()      { return gpsLon; }
 
     public boolean toggleAutoRecentre() {
         autoRecentre = !autoRecentre;
@@ -458,6 +552,21 @@ public class MapView extends View {
             float sx = W / 2f + ptx * scaledTile;
             float sy = H / 2f + pty * scaledTile;
             canvas.drawCircle(sx, sy, 4f, trackDotPaint);
+        }
+
+        // POI markers from Near Me search
+        List<PoiMarker> pois = poiMarkers;
+        for (PoiMarker poi : pois) {
+            float ptx = (float)((tileX(poi.lon, zoom) + pixelXInTile(poi.lon, zoom) / TILE_SIZE)
+                                 - (cx + (double) px / scaledTile));
+            float pty = (float)((tileY(poi.lat, zoom) + pixelYInTile(poi.lat, zoom) / TILE_SIZE)
+                                 - (cy + (double) py / scaledTile));
+            float sx = W / 2f + ptx * scaledTile;
+            float sy = H / 2f + pty * scaledTile;
+            poiFill.setColor(poi.color);
+            Path star = starPath(sx, sy, 22f, 9f);
+            canvas.drawPath(star, poiFill);
+            canvas.drawPath(star, poiBorder);
         }
 
         // Current GPS dot — half the old size (9 instead of 18), plain filled blue

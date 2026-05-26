@@ -27,6 +27,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -37,6 +38,49 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     private static final int PERM_REQUEST    = 1;
     private static final int PERM_REQUEST_BG = 2;
+
+    // ── Near Me ───────────────────────────────────────────────────────────────
+
+    private static final String PREF_NEARBY_RADIUS = "nearby_radius_km";
+
+    private static final class NearbyCategory {
+        final String label, prefKey, overpassFilter;
+        final int    color;
+        NearbyCategory(String label, String prefKey, String overpassFilter, int color) {
+            this.label = label; this.prefKey = prefKey;
+            this.overpassFilter = overpassFilter; this.color = color;
+        }
+    }
+
+    // To add a new category later: one new NearbyCategory line here.
+    // Put the most-selective INDEXED tag first in overpassFilter so Overpass
+    // uses the tag index before applying any regex — keeps queries fast.
+    private static final NearbyCategory[] CATEGORIES = {
+        new NearbyCategory("Sainsbury's",        "nearby_sainsburys",
+            "[\"shop\"][\"name\"~\"Sainsbury\",i]",              0xFF2E7D32),
+        new NearbyCategory("Other supermarkets", "nearby_supermarkets",
+            "[\"shop\"=\"supermarket\"]",                        0xFF81C784),
+        new NearbyCategory("Petrol stations",    "nearby_petrol",
+            "[\"amenity\"=\"fuel\"]",                            0xFFBF360C),
+        new NearbyCategory("Restaurants",        "nearby_restaurants",
+            "[\"amenity\"=\"restaurant\"]",                      0xFFFF9800),
+        new NearbyCategory("Takeaways",          "nearby_takeaways",
+            "[\"amenity\"~\"fast_food|takeaway\"]",              0xFFFFC107),
+        new NearbyCategory("Car parks",          "nearby_carparks",
+            "[\"amenity\"=\"parking\"]",                         0xFF607D8B),
+        new NearbyCategory("Landmarks",          "nearby_landmarks",
+            "[\"tourism\"~\"attraction|viewpoint|artwork|gallery|museum\"]", 0xFF00BCD4),
+        new NearbyCategory("Churches",           "nearby_churches",
+            "[\"amenity\"=\"place_of_worship\"]",                0xFF9C27B0),
+    };
+
+    private static final String[] OVERPASS_ENDPOINTS = {
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    };
+
+    private boolean[] nearbyEnabled  = new boolean[CATEGORIES.length];
+    private int       nearbyRadiusKm = 5;
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
@@ -133,6 +177,31 @@ public class MainActivity extends Activity implements LocationService.Listener {
         btnCancelAlert.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 if (bound) service.cancelAlert();
+            }
+        });
+
+        // Load Near Me prefs
+        android.content.SharedPreferences np =
+            getSharedPreferences(LocationService.PREFS, MODE_PRIVATE);
+        nearbyRadiusKm = np.getInt(PREF_NEARBY_RADIUS, 5);
+        for (int i = 0; i < CATEGORIES.length; i++)
+            nearbyEnabled[i] = np.getBoolean(CATEGORIES[i].prefKey, false);
+
+        final Button btnNearby = (Button) findViewById(R.id.btn_nearby);
+        btnNearby.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!mapView.hasGpsLocation()) {
+                    android.widget.Toast.makeText(MainActivity.this,
+                        "No GPS fix yet", android.widget.Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                doNearbySearch(btnNearby);
+            }
+        });
+        btnNearby.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                showNearbySettingsDialog();
+                return true;
             }
         });
 
@@ -290,6 +359,301 @@ public class MainActivity extends Activity implements LocationService.Listener {
         });
     }
 
+    // ── Near Me search ────────────────────────────────────────────────────────
+
+    private void doNearbySearch(final Button btn) {
+        final double lat = mapView.getGpsLat();
+        final double lon = mapView.getGpsLon();
+        final String query = buildOverpassQuery(lat, lon);
+        if (query.isEmpty()) {
+            android.widget.Toast.makeText(this,
+                "No categories selected — long-press Near to configure",
+                android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        btn.setEnabled(false);
+        btn.setText("...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<MapView.PoiMarker> results = new ArrayList<>();
+                String errMsg = null;
+                try {
+                    String json = queryOverpass(query);
+                    parseOverpassJson(json, results);
+                } catch (Exception e) {
+                    errMsg = "Search failed: " + e.getMessage();
+                }
+                final String finalErr = errMsg;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        btn.setEnabled(true);
+                        btn.setText("NEAR ME");
+                        if (finalErr != null) {
+                            android.widget.Toast.makeText(MainActivity.this,
+                                finalErr, android.widget.Toast.LENGTH_LONG).show();
+                        } else {
+                            mapView.setPoiMarkers(results);
+                            android.widget.Toast.makeText(MainActivity.this,
+                                results.size() + " result"
+                                    + (results.size() == 1 ? "" : "s") + " found",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private String buildOverpassQuery(double lat, double lon) {
+        int radiusM = nearbyRadiusKm * 1000;
+        String around = String.format(Locale.US, "(around:%d,%.6f,%.6f)", radiusM, lat, lon);
+        StringBuilder q = new StringBuilder("[out:json][timeout:60];\n(\n");
+        boolean any = false;
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            if (!nearbyEnabled[i]) continue;
+            q.append("  node").append(CATEGORIES[i].overpassFilter).append(around).append(";\n");
+            q.append("  way").append(CATEGORIES[i].overpassFilter).append(around).append(";\n");
+            any = true;
+        }
+        if (!any) return "";
+        q.append(");\nout center 200;");
+        return q.toString();
+    }
+
+    private String queryOverpass(String query) throws Exception {
+        Exception lastEx = null;
+        for (String endpoint : OVERPASS_ENDPOINTS) {
+            try {
+                java.net.HttpURLConnection conn =
+                    (java.net.HttpURLConnection) new java.net.URL(endpoint).openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                conn.setRequestProperty("Content-Type",
+                    "application/x-www-form-urlencoded");
+                byte[] body = ("data=" + URLEncoder.encode(query, "UTF-8")).getBytes("UTF-8");
+                conn.getOutputStream().write(body);
+                conn.getOutputStream().close();
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line).append('\n');
+                    br.close();
+                    conn.disconnect();
+                    return sb.toString();
+                }
+                conn.disconnect();
+                if (code == 429 || code == 504 || code == 502) {
+                    // Rate-limited or gateway error — pause then try mirror
+                    try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+                    lastEx = new Exception("HTTP " + code);
+                } else {
+                    throw new Exception("HTTP " + code);
+                }
+            } catch (Exception e) {
+                if (e.getMessage() != null && e.getMessage().startsWith("HTTP ")) throw e;
+                lastEx = e;
+            }
+        }
+        // All endpoints failed — give a clear message for 429
+        String msg = lastEx != null ? lastEx.getMessage() : "unknown";
+        if ("HTTP 429".equals(msg))
+            throw new Exception("Server busy — please try again in a moment");
+        throw new Exception(msg);
+    }
+
+    private void parseOverpassJson(String json, List<MapView.PoiMarker> out) {
+        int arrStart = json.indexOf("\"elements\"");
+        if (arrStart < 0) return;
+        arrStart = json.indexOf('[', arrStart);
+        if (arrStart < 0) return;
+
+        int pos = arrStart + 1, depth = 0, elemStart = -1;
+        while (pos < json.length()) {
+            char c = json.charAt(pos);
+            if (c == '"') {
+                pos++;
+                while (pos < json.length()) {
+                    char sc = json.charAt(pos);
+                    if (sc == '\\') pos++;
+                    else if (sc == '"') break;
+                    pos++;
+                }
+            } else if (c == '{') {
+                if (depth == 0) elemStart = pos;
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0 && elemStart >= 0) {
+                    parseOverpassElement(json.substring(elemStart, pos + 1), out);
+                    elemStart = -1;
+                }
+            } else if (c == ']' && depth == 0) {
+                break;
+            }
+            pos++;
+        }
+    }
+
+    private void parseOverpassElement(String elem, List<MapView.PoiMarker> out) {
+        String type = extractJsonString(elem, "type");
+        if (type == null) return;
+        double lat, lon;
+        try {
+            if ("node".equals(type)) {
+                String latS = extractJsonNumber(elem, "lat");
+                String lonS = extractJsonNumber(elem, "lon");
+                if (latS == null || lonS == null) return;
+                lat = Double.parseDouble(latS);
+                lon = Double.parseDouble(lonS);
+            } else if ("way".equals(type)) {
+                int ci = elem.indexOf("\"center\"");
+                if (ci < 0) return;
+                int cb = elem.indexOf('{', ci);
+                int ce = findMatchingBrace(elem, cb);
+                if (cb < 0 || ce < 0) return;
+                String center = elem.substring(cb, ce + 1);
+                String latS = extractJsonNumber(center, "lat");
+                String lonS = extractJsonNumber(center, "lon");
+                if (latS == null || lonS == null) return;
+                lat = Double.parseDouble(latS);
+                lon = Double.parseDouble(lonS);
+            } else { return; }
+        } catch (NumberFormatException e) { return; }
+
+        String name = null, amenity = null, shop = null, tourism = null;
+        int ti = elem.indexOf("\"tags\"");
+        if (ti >= 0) {
+            int tb = elem.indexOf('{', ti);
+            int te = findMatchingBrace(elem, tb);
+            if (tb >= 0 && te > tb) {
+                String tags = elem.substring(tb, te + 1);
+                name    = extractJsonString(tags, "name");
+                amenity = extractJsonString(tags, "amenity");
+                shop    = extractJsonString(tags, "shop");
+                tourism = extractJsonString(tags, "tourism");
+            }
+        }
+
+        // Match to a category to get the right colour
+        int    color         = -1;
+        String categoryLabel = null;
+        String lname = name != null ? name.toLowerCase(Locale.ROOT) : "";
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            if (!nearbyEnabled[i]) continue;
+            boolean match = false;
+            switch (CATEGORIES[i].prefKey) {
+                case "nearby_sainsburys":
+                    match = lname.contains("sainsbury"); break;
+                case "nearby_supermarkets":
+                    match = "supermarket".equals(shop) && !lname.contains("sainsbury"); break;
+                case "nearby_petrol":
+                    match = "fuel".equals(amenity); break;
+                case "nearby_restaurants":
+                    match = "restaurant".equals(amenity); break;
+                case "nearby_takeaways":
+                    match = "fast_food".equals(amenity) || "takeaway".equals(amenity); break;
+                case "nearby_carparks":
+                    match = "parking".equals(amenity); break;
+                case "nearby_landmarks":
+                    match = tourism != null && (tourism.equals("attraction")
+                        || tourism.equals("viewpoint") || tourism.equals("artwork")
+                        || tourism.equals("gallery")   || tourism.equals("museum")); break;
+                case "nearby_churches":
+                    match = "place_of_worship".equals(amenity); break;
+            }
+            if (match) { color = CATEGORIES[i].color; categoryLabel = CATEGORIES[i].label; break; }
+        }
+        if (color == -1) return; // no enabled category matched
+
+        String displayName = (name != null && !name.isEmpty()) ? name : categoryLabel;
+        out.add(new MapView.PoiMarker(lat, lon, displayName, color));
+    }
+
+    private int findMatchingBrace(String s, int open) {
+        if (open < 0 || open >= s.length() || s.charAt(open) != '{') return -1;
+        int depth = 0;
+        for (int i = open; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"') {
+                i++;
+                while (i < s.length()) {
+                    char sc = s.charAt(i);
+                    if (sc == '\\') i++;
+                    else if (sc == '"') break;
+                    i++;
+                }
+            } else if (c == '{') depth++;
+            else if (c == '}') { if (--depth == 0) return i; }
+        }
+        return -1;
+    }
+
+    private String extractJsonNumber(String json, String key) {
+        String search = "\"" + key + "\":";
+        int idx = json.indexOf(search);
+        if (idx < 0) return null;
+        int start = idx + search.length();
+        while (start < json.length() && json.charAt(start) == ' ') start++;
+        int end = start;
+        while (end < json.length() && "-0123456789.eE+".indexOf(json.charAt(end)) >= 0) end++;
+        return end > start ? json.substring(start, end) : null;
+    }
+
+    // ── Near Me settings dialog ───────────────────────────────────────────────
+
+    private void showNearbySettingsDialog() {
+        int dp8  = Math.round(8  * getResources().getDisplayMetrics().density);
+        int dp16 = Math.round(16 * getResources().getDisplayMetrics().density);
+        int dp4  = Math.round(4  * getResources().getDisplayMetrics().density);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp16, dp8, dp16, dp8);
+
+        layout.addView(label("Search radius (km)"));
+        final EditText editRadius = editText(InputType.TYPE_CLASS_NUMBER,
+            String.valueOf(nearbyRadiusKm));
+        layout.addView(editRadius);
+
+        layout.addView(label("Search for:"));
+        final CheckBox[] checks = new CheckBox[CATEGORIES.length];
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            CheckBox cb = new CheckBox(this);
+            cb.setText(CATEGORIES[i].label);
+            cb.setChecked(nearbyEnabled[i]);
+            cb.setPadding(0, dp4, 0, dp4);
+            layout.addView(cb);
+            checks[i] = cb;
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Near Me Settings")
+            .setView(layout)
+            .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    try {
+                        nearbyRadiusKm = Math.max(1,
+                            Integer.parseInt(editRadius.getText().toString().trim()));
+                    } catch (NumberFormatException ignored) {}
+                    android.content.SharedPreferences.Editor ed =
+                        getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit();
+                    ed.putInt(PREF_NEARBY_RADIUS, nearbyRadiusKm);
+                    for (int i = 0; i < CATEGORIES.length; i++) {
+                        nearbyEnabled[i] = checks[i].isChecked();
+                        ed.putBoolean(CATEGORIES[i].prefKey, nearbyEnabled[i]);
+                    }
+                    ed.apply();
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
     // ── Settings dialog ───────────────────────────────────────────────────────
 
     private void showSettingsDialog() {
@@ -308,6 +672,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
             @Override public void onClick(View v) { showHelpDialog(); }
         });
         layout.addView(btnHelp);
+
+        Button btnNearbySettings = new Button(this);
+        btnNearbySettings.setText("Near Me Settings");
+        btnNearbySettings.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showNearbySettingsDialog(); }
+        });
+        layout.addView(btnNearbySettings);
 
         layout.addView(label("Session name"));
         final EditText editSession = editText(InputType.TYPE_CLASS_TEXT, service.session);
