@@ -111,8 +111,19 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvW3w3       = (TextView) findViewById(R.id.tv_w3w_3);
         llW3w        = (LinearLayout) findViewById(R.id.ll_w3w);
 
-        ((Button) findViewById(R.id.btn_recentre)).setOnClickListener(new View.OnClickListener() {
+        final Button btnRecentre = (Button) findViewById(R.id.btn_recentre);
+        btnRecentre.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { mapView.recentre(); }
+        });
+        btnRecentre.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                boolean on = mapView.toggleAutoRecentre();
+                btnRecentre.setBackgroundColor(on ? 0xFF2979FF : 0xFF555555);
+                android.widget.Toast.makeText(MainActivity.this,
+                    on ? "Auto-centre ON" : "Auto-centre OFF",
+                    android.widget.Toast.LENGTH_SHORT).show();
+                return true;
+            }
         });
         ((Button) findViewById(R.id.btn_settings)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showSettingsDialog(); }
@@ -124,6 +135,15 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 if (bound) service.cancelAlert();
             }
         });
+
+        final View bottomBar = findViewById(R.id.bottom_bar);
+        bottomBar.getViewTreeObserver().addOnGlobalLayoutListener(
+            new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override public void onGlobalLayout() {
+                    mapView.setBottomInset(bottomBar.getHeight());
+                    bottomBar.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                }
+            });
 
         requestNeededPermissions();
     }
@@ -528,7 +548,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "as smaller dots, filtered by <i>Min satellites</i> and <i>Display period</i>. "
             + "An optional coloured line can be drawn connecting the dots. "
             + "While the app is in the foreground, the map auto-recentres whenever the GPS dot "
-            + "comes within 10% of any screen edge.<br><br>"
+            + "comes within 10% of any screen edge. <b>Long-press</b> the blue &#8982; button to "
+            + "toggle auto-centre on/off (button turns grey when off).<br><br>"
 
             + "<b>Data overlay — Land mode</b><br>"
             + "<b>Dist</b> — Total distance (km) between GPS fixes within the display period.<br>"

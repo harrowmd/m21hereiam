@@ -37,7 +37,9 @@ public class MapView extends View {
     // GPS fix position (for the dot)
     private double  gpsLat      = 0;
     private double  gpsLon      = 0;
-    private boolean hasLocation = false;
+    private boolean hasLocation   = false;
+    private boolean autoRecentre = true;
+    private int     bottomInset  = 0;   // height of bottom data bar in px
 
     // Pan gesture state
     private float   lastTouchX  = 0;
@@ -239,7 +241,15 @@ public class MapView extends View {
         postInvalidate();
     }
 
+    public void setBottomInset(int px) { bottomInset = px; }
+
+    public boolean toggleAutoRecentre() {
+        autoRecentre = !autoRecentre;
+        return autoRecentre;
+    }
+
     private void autoRecentreIfNearEdge() {
+        if (!autoRecentre) return;
         int W = getWidth();
         int H = getHeight();
         if (W == 0 || H == 0) return;
@@ -257,9 +267,10 @@ public class MapView extends View {
         float mx = W / 2f + gpsTileX * scaledTile;
         float my = H / 2f + gpsTileY * scaledTile;
 
-        float margin = 0.1f;
+        float margin      = 0.1f;
+        float visibleBase = H - bottomInset;   // y-coordinate of top of bottom bar
         if (mx < W * margin || mx > W * (1 - margin)
-                || my < H * margin || my > H * (1 - margin)) {
+                || my < H * margin || my > visibleBase * (1 - margin)) {
             centerLat = gpsLat;
             centerLon = gpsLon;
         }
