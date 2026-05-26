@@ -18,12 +18,13 @@ devices.
 2. [Main Screen](#2-main-screen)
 3. [Data Overlay](#3-data-overlay)
 4. [Map Controls](#4-map-controls)
-5. [Settings](#5-settings)
-6. [Log Files](#6-log-files)
-7. [Nextcloud Upload](#7-nextcloud-upload)
-8. [Remote Alert System](#8-remote-alert-system)
-9. [Background Operation](#9-background-operation)
-10. [Start on Bootup](#10-start-on-bootup)
+5. [Near Me Search](#5-near-me-search)
+6. [Settings](#6-settings)
+7. [Log Files](#7-log-files)
+8. [Nextcloud Upload](#8-nextcloud-upload)
+9. [Remote Alert System](#9-remote-alert-system)
+10. [Background Operation](#10-background-operation)
+11. [Start on Bootup](#11-start-on-bootup)
 
 ---
 
@@ -49,10 +50,11 @@ Google Play Store.
 ![Main screen](screen_main.png)
 
 The full screen shows an **OpenStreetMap** map centred on your current
-location. Two buttons are visible:
+location. Three buttons are always visible:
 
 | Button | Position | Function |
 |--------|----------|----------|
+| **NEAR ME** (green) | Top-left | Search for nearby points of interest |
 | ⚙ (grey) | Top-right | Opens the Settings dialog |
 | ⊕ (blue) | Bottom-right | Re-centres the map on your current position |
 
@@ -136,19 +138,25 @@ Tapping anywhere on the What3Words column opens
 
 ## 4. Map Controls
 
-| Gesture | Action |
+| Gesture / Button | Action |
 |---------|--------|
 | **Pinch in / out** | Zoom (levels 1–19) |
 | **Single-finger drag** | Pan the map |
 | **Tap ⊕ button** | Snap map back to current GPS position |
+| **Long-press ⊕ button** | Toggle auto-centre on/off |
 
 The blue location dot moves independently of the map centre — if you pan
 away to look at another area, the dot continues to show your real position.
 Tap ⊕ to return the view to your location.
 
 **Auto-recentre:** while the app is in the foreground, the map automatically
-snaps back to your position whenever the GPS dot comes within 10% of any
-screen edge. This keeps you on screen without any manual interaction.
+snaps back to your position whenever the GPS dot comes within 10% of the
+visible map edge. This keeps you on screen without any manual interaction.
+
+**Disabling auto-recentre:** long-press the ⊕ button to toggle auto-centre
+off. The button turns grey when off and blue when on. A brief message
+confirms the change. Use this when you want to pan to another location
+without the map jumping back to your position.
 
 Map tiles are fetched from **OpenStreetMap** (and **OpenSeaMap** in Marine
 mode) over the internet and cached while the app is running.
@@ -162,7 +170,55 @@ lower-resolution tiles promptly at 0.5×.
 
 ---
 
-## 5. Settings
+## 5. Near Me Search
+
+Tap the green **NEAR ME** button to search for points of interest near your
+current GPS position. Results are fetched from **OpenStreetMap** via the
+free Overpass API and displayed on the map as coloured 5-pointed stars.
+
+**Tap any star** to see its name and distance from your current position.
+
+### Categories and colours
+
+| Star colour | Category |
+|-------------|----------|
+| Dark green | Sainsbury's |
+| Light green | Other supermarkets |
+| Dark orange | Petrol stations |
+| Orange | Restaurants |
+| Amber | Takeaways / fast food |
+| Blue-grey | Car parks |
+| Cyan | Landmarks (attractions, viewpoints, museums, galleries) |
+| Purple | Churches / places of worship |
+
+All categories are **off by default**. Select which ones to search for in
+Near Me Settings before tapping the button.
+
+### Near Me Settings
+
+Open Near Me Settings by either:
+- **Long-pressing** the green NEAR ME button, or
+- Tapping **Near Me Settings** in the ⚙ Settings dialog
+
+| Setting | Description |
+|---------|-------------|
+| **Search radius (km)** | How far from your position to search. No hard maximum, but very large radii (50+ km) may time out. |
+| **Category checkboxes** | Tick the categories you want to include in the search. |
+
+Tap **Save** to apply. Settings are remembered between sessions.
+
+### Notes
+
+- Results are capped at 200 per search to keep queries fast.
+- If the server is busy (HTTP 429 or 504) the app automatically retries
+  on a mirror server after a 2-second pause.
+- OSM coverage is excellent in the UK for all categories. Landmark
+  coverage depends on local contributors.
+- Results stay on the map until you run a new search.
+
+---
+
+## 6. Settings
 
 Tap the ⚙ button to open the Settings dialog. Scroll down to see all
 options. Tap **Save** to apply changes immediately; tap **Cancel** to
@@ -322,7 +378,7 @@ been published to the release without a version number change.
 
 ---
 
-## 6. Log Files
+## 7. Log Files
 
 The app writes four log files per day, all stored in the phone's **Documents**
 folder (`Internal Storage / Documents`):
@@ -407,7 +463,7 @@ in Settings.
 
 ---
 
-## 7. Nextcloud Upload
+## 8. Nextcloud Upload
 
 The app uploads today's four log files (`.csv`, `.gpx`, `.kml`, `.txt`) to
 your Nextcloud server at every **upload interval**.
@@ -443,7 +499,7 @@ Upload done: 4 file(s) → alice
 
 ---
 
-## 8. Remote Alert System
+## 9. Remote Alert System
 
 You can trigger a full alert on the phone remotely by uploading an MP3 file
 to Nextcloud. When triggered the phone plays an alarm, flashes the torch,
@@ -527,7 +583,7 @@ Alert: 911911.mp3 renamed to 2026-03-01-911911.mp3 on Nextcloud
 
 ---
 
-## 9. Background Operation
+## 10. Background Operation
 
 The app runs as an Android **foreground service**. This means:
 
@@ -559,7 +615,7 @@ You can safely leave the app running continuously for days or weeks.
 
 ---
 
-## 10. Start on Bootup
+## 11. Start on Bootup
 
 With **Start on bootup** ticked (default), the app starts automatically
 when the phone is switched on or restarted. No manual launch is needed.
@@ -584,9 +640,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v2.2 (13)
-Built: 2026-05-02 18:09
-Up to date (v2.2)
+Here I Am Now  v2.4 (15)
+Built: 2026-05-26 18:38
+Up to date (v2.4)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
