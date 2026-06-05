@@ -72,26 +72,29 @@ current coordinates. This keeps the background service alive.
 
 ## 3. Data Overlay
 
-A semi-transparent bar at the bottom of the screen shows live data updated
-at each **Update interval**. The fields shown depend on the **Map type**
-setting.
+A **white bar** at the bottom of the screen shows data updated at each
+**Update interval**. The fields shown depend on the **Map type** setting.
+
+Most fields refresh only at the update interval, using the best averaged
+GPS position calculated during that cycle. The exception is **GPS fix age**,
+which counts up in real time every second.
 
 ### Land mode (default)
 
 | Left column | Centre column | Right column (right-justified) |
 |-------------|---------------|-------------------------------|
-| `Dist: X.XX km` | Latitude | "What3Words" |
-| `Speed: X.X km/h` | Longitude | word 1 |
-| `Ascent: X m` | Altitude (m) | word 2 |
+| `Dist: X.XX km` | Latitude | "what3words" |
+| `Alt: X m` | Longitude | word 1 |
+| `Ascent: X m` | `GPS fix age: Xs` | word 2 |
 | Satellites in fix | Accuracy (m) | word 3 |
 
 ### Marine mode
 
 | Left column | Centre column | Right column (right-justified) |
 |-------------|---------------|-------------------------------|
-| `Dist: X.XX km` | Latitude | "What3Words" |
-| `Speed: X.X km/h` | Longitude | word 1 |
-| `Course: XXX°` | Depth (m) | word 2 |
+| `Dist: X.XX km` | Latitude | "what3words" |
+| `Alt / Depth` | Longitude | word 1 |
+| `Course: XXX°` | `GPS fix age: Xs` | word 2 |
 | Satellites in fix | Accuracy (m) | word 3 |
 
 ### Dist (distance)
@@ -99,17 +102,24 @@ Total distance in kilometres between consecutive GPS fixes recorded within
 the current **Display period**. Calculated using the Haversine formula.
 Resets when the service is restarted or when the display period rolls over.
 
-### Speed
-Average speed over the display period: **Dist ÷ Display period (hours)**,
-shown in km/h. This is a session-average speed, not instantaneous speed.
+### Alt *(Land mode only)*
+Altitude above sea level in metres, averaged from all GPS fixes in the
+current update cycle.
 
 ### Ascent *(Land mode only)*
 Cumulative altitude climbed (metres) within the display period. Only upward
 altitude changes of 5 m or more are counted, filtering out GPS altitude noise.
 Descents are ignored.
 
-### Alt *(Land mode only)*
-Altitude above sea level in metres, from the current GPS fix.
+### GPS fix age
+Time in seconds since the last successful averaged GPS position was
+calculated. Under normal conditions this counts up from 0 to the
+**Update interval** (e.g. 0 → 60 s) then resets.
+
+If the GPS chip loses lock or location services are unavailable, the counter
+keeps counting upward past the update interval, giving a clear indication
+that position data is stale. It resets to 0 as soon as a good averaged fix
+is calculated again.
 
 ### Course *(Marine mode only)*
 Average bearing in degrees (000°–360°) computed from the last four logged GPS
@@ -128,9 +138,8 @@ shallow waters with no data, or when the lookup is unavailable.
 ### What3Words
 The three-word address for the most recently logged GPS fix, updated at each
 **Update interval**. Shows `--` until the first fix is logged or while a
-lookup is in progress.
+lookup is in progress. The label and words are shown in **dark blue**.
 
-When a What3Words address is shown the three words turn **light blue**.
 Tapping anywhere on the What3Words column opens
 `https://w3w.co/word1.word2.word3` in the default web browser.
 
@@ -288,19 +297,16 @@ This setting also defines the time window used to calculate **Dist**,
 value and tapping **Save** updates the map and all figures immediately.
 
 ### Num GPS fixes
-How many GPS samples to collect and average for each logged position.
+The minimum number of GPS fixes that must be collected during an update
+cycle before the averaged position is considered reliable.
 Default: `5`
 
-When set to more than 1, the app samples GPS every 5 seconds, collects
-the requested number of fixes, removes statistical outliers, and logs
-the averaged position. This improves accuracy compared to using a single
-raw fix. Set to `1` to disable averaging and log each fix immediately.
-
-The GPS receiver is automatically duty-cycled to save battery: it is
-switched off after each log tick and restarted only shortly before the
-next tick is due. With default settings (60 s interval, 5 fixes) the
-GPS is active for approximately 30 s and off for 30 s, saving around
-50 % of GPS battery consumption compared to running continuously.
+The GPS receiver runs continuously at 1-second intervals, accumulating
+all fixes received during the cycle. At the end of each update interval,
+statistical outliers are removed and the remaining fixes are averaged to
+produce the logged position. If fewer than this minimum were received
+(e.g. due to poor GPS conditions), the app still logs the best available
+average but records a warning in the `.txt` log.
 
 ### Track colour
 Colour of the line drawn between the GPS track dots on the map.
@@ -602,14 +608,15 @@ The app runs as an Android **foreground service**. This means:
 The app is designed to minimise battery use between log ticks:
 
 - The CPU sleeps between Handler callbacks — there are no spin loops.
-- **GPS duty cycling**: when **Num GPS fixes** is greater than 1, the
-  GPS receiver is turned off after each log tick and restarted only
-  when fixes are needed for the next tick. This significantly reduces
-  GPS on-time (see [Num GPS fixes](#num-gps-fixes) for details).
-- When **Num GPS fixes** is 1, the GPS is requested at the full update
-  interval, so the chip duty-cycles itself at the OS level.
+- The GPS receiver runs continuously at 1-second intervals. This ensures
+  reliable fix acquisition on Android 15, where restarting GPS between
+  cycles causes long warm-up delays. The OS manages chip power internally.
+- The data overlay, map dot, log files, and Nextcloud notification are all
+  updated only once per **Update interval** — not on every raw GPS fix.
 - Nextcloud uploads and What3Words lookups run on background threads
   and do not block the main service loop.
+- A 60-second GPS watchdog automatically restarts location updates if no
+  raw fix is received within twice the update interval.
 
 You can safely leave the app running continuously for days or weeks.
 
@@ -640,9 +647,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v2.4 (15)
-Built: 2026-05-26 18:38
-Up to date (v2.4)
+Here I Am Now  v2.5 (16)
+Built: 2026-06-05 16:42
+Up to date (v2.5)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
