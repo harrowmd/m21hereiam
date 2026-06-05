@@ -1,73 +1,80 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
 
-    <com.example.m21hereiam.MapView
-        android:id="@+id/map_view"
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
-    <Button
-        android:id="@+id/btn_cancel_alert"
-        android:layout_width="wrap_content"
-        android:layout_height="56dp"
-        android:layout_gravity="top|center_horizontal"
-        android:layout_marginTop="16dp"
-        android:background="#CCDD0000"
-        android:text="Cancel Alert"
-        android:textColor="#FFFFFF"
-        android:textSize="18sp"
-        android:paddingLeft="24dp"
-        android:paddingRight="24dp"
-        android:visibility="gone" />
+        <com.example.m21hereiam.MapView
+            android:id="@+id/map_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-    <Button
-        android:id="@+id/btn_nearby"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_gravity="top|start"
-        android:layout_marginTop="16dp"
-        android:layout_marginStart="16dp"
-        android:background="#CC2E7D32"
-        android:text="NEAR\nME"
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:padding="0dp"
-        android:longClickable="true" />
+        <Button
+            android:id="@+id/btn_cancel_alert"
+            android:layout_width="wrap_content"
+            android:layout_height="56dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="16dp"
+            android:background="#CCDD0000"
+            android:text="Cancel Alert"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:paddingLeft="24dp"
+            android:paddingRight="24dp"
+            android:visibility="gone" />
 
-    <Button
-        android:id="@+id/btn_settings"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="16dp"
-        android:layout_marginEnd="16dp"
-        android:background="#CC333333"
-        android:text="&#9881;"
-        android:textColor="#FFFFFF"
-        android:textSize="22sp"
-        android:padding="0dp" />
+        <Button
+            android:id="@+id/btn_nearby"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="top|start"
+            android:layout_marginTop="16dp"
+            android:layout_marginStart="16dp"
+            android:background="#CC2E7D32"
+            android:text="NEAR\nME"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:padding="0dp"
+            android:longClickable="true" />
 
-    <Button
-        android:id="@+id/btn_recentre"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_gravity="bottom|end"
-        android:layout_marginBottom="110dp"
-        android:layout_marginEnd="16dp"
-        android:background="#FF2979FF"
-        android:text="&#8982;"
-        android:textColor="#FFFFFF"
-        android:textSize="22sp"
-        android:padding="0dp" />
+        <Button
+            android:id="@+id/btn_settings"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="16dp"
+            android:layout_marginEnd="16dp"
+            android:background="#CC333333"
+            android:text="&#9881;"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"
+            android:padding="0dp" />
+
+        <Button
+            android:id="@+id/btn_recentre"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginBottom="16dp"
+            android:layout_marginEnd="16dp"
+            android:background="#FF2979FF"
+            android:text="&#8982;"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"
+            android:padding="0dp" />
+
+    </FrameLayout>
 
     <LinearLayout
         android:id="@+id/bottom_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#CC000000"
+        android:background="#FFFFFFFF"
         android:orientation="horizontal"
         android:padding="10dp">
 
@@ -81,25 +88,25 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Dist: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
-            <TextView android:id="@+id/tv_speed"
+            <TextView android:id="@+id/tv_alt"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Speed: --"
-                android:textColor="#FFFFFF"
+                android:text="Alt: --"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_ascent"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Ascent: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_satellites"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Satellites: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
 
         </LinearLayout>
@@ -114,25 +121,25 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Lat: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_lon"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Lon: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
-            <TextView android:id="@+id/tv_alt"
+            <TextView android:id="@+id/tv_fix_age"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Alt: --"
-                android:textColor="#FFFFFF"
+                android:text="GPS fix age: --"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
             <TextView android:id="@+id/tv_accuracy"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Accuracy: --"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF000000"
                 android:textSize="13sp" />
 
         </LinearLayout>
@@ -151,28 +158,28 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="what3words"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF0A1172"
                 android:textSize="13sp"
                 android:gravity="end" />
             <TextView android:id="@+id/tv_w3w_1"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="--"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF0A1172"
                 android:textSize="13sp"
                 android:gravity="end" />
             <TextView android:id="@+id/tv_w3w_2"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="--"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF0A1172"
                 android:textSize="13sp"
                 android:gravity="end" />
             <TextView android:id="@+id/tv_w3w_3"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="--"
-                android:textColor="#FFFFFF"
+                android:textColor="#FF0A1172"
                 android:textSize="13sp"
                 android:gravity="end" />
 
@@ -180,4 +187,4 @@
 
     </LinearLayout>
 
-</FrameLayout>
+</LinearLayout>

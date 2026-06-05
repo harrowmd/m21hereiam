@@ -84,7 +84,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private MapView  mapView;
-    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvDist, tvSpeed, tvAscent;
+    private TextView tvLat, tvLon, tvAlt, tvAccuracy, tvSatellites, tvDist, tvFixAge, tvAscent;
     private TextView tvW3w1, tvW3w2, tvW3w3;
     private LinearLayout llW3w;
     private Button   btnCancelAlert;
@@ -131,7 +131,16 @@ public class MainActivity extends Activity implements LocationService.Listener {
     private final SimpleDateFormat tsFmt   = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
 
     private final Runnable clockTick = new Runnable() {
-        @Override public void run() { clockHandler.postDelayed(this, 1000); }
+        @Override public void run() {
+            if (tvFixAge != null && bound && service != null) {
+                long ageMs = service.lastFixTimeMs > 0
+                    ? System.currentTimeMillis() - service.lastFixTimeMs : -1;
+                tvFixAge.setText(ageMs < 0
+                    ? "GPS fix age: --"
+                    : String.format("GPS fix age: %ds", ageMs / 1000));
+            }
+            clockHandler.postDelayed(this, 1000);
+        }
     };
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -148,12 +157,20 @@ public class MainActivity extends Activity implements LocationService.Listener {
         tvAccuracy   = (TextView) findViewById(R.id.tv_accuracy);
         tvSatellites = (TextView) findViewById(R.id.tv_satellites);
         tvDist       = (TextView) findViewById(R.id.tv_dist);
-        tvSpeed      = (TextView) findViewById(R.id.tv_speed);
+        tvFixAge     = (TextView) findViewById(R.id.tv_fix_age);
         tvAscent     = (TextView) findViewById(R.id.tv_ascent);
         tvW3w1       = (TextView) findViewById(R.id.tv_w3w_1);
         tvW3w2       = (TextView) findViewById(R.id.tv_w3w_2);
         tvW3w3       = (TextView) findViewById(R.id.tv_w3w_3);
         llW3w        = (LinearLayout) findViewById(R.id.ll_w3w);
+
+        // Pad bottom bar below the navigation bar (Android 15 edge-to-edge enforcement)
+        final View bottomBarView = findViewById(R.id.bottom_bar);
+        bottomBarView.setOnApplyWindowInsetsListener((v, insets) -> {
+            int navBottom = insets.getSystemWindowInsetBottom();
+            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), navBottom);
+            return insets.consumeSystemWindowInsets();
+        });
 
         final Button btnRecentre = (Button) findViewById(R.id.btn_recentre);
         btnRecentre.setOnClickListener(new View.OnClickListener() {
@@ -279,9 +296,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 tvDist.setText(km < 0.001
                     ? "Dist: 0.00 km"
                     : String.format("Dist: %.2f km", km));
-                double speedKmh = bound && service.displayPeriodHours > 0
-                    ? km / service.displayPeriodHours : 0;
-                tvSpeed.setText(String.format("Speed: %.1f km/h", speedKmh));
             }
         });
     }

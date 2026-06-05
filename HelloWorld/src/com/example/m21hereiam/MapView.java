@@ -564,7 +564,7 @@ public class MapView extends View {
             float sx = W / 2f + ptx * scaledTile;
             float sy = H / 2f + pty * scaledTile;
             poiFill.setColor(poi.color);
-            Path star = starPath(sx, sy, 22f, 9f);
+            Path star = starPath(sx, sy, 44f, 18f);
             canvas.drawPath(star, poiFill);
             canvas.drawPath(star, poiBorder);
         }

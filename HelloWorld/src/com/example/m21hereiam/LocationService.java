@@ -177,7 +177,9 @@ public class LocationService extends Service implements LocationListener {
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
 
-    boolean hasLocation = false; // true once a real GPS fix has been received
+    boolean hasLocation      = false; // true once a real GPS fix has been received
+    long    lastFixTimeMs    = 0;    // time of last successful averaged-position calculation (UI display)
+    long    lastRawFixTimeMs = 0;    // time of last raw GPS fix arrival (watchdog)
 
     // ── Alert state ───────────────────────────────────────────────────────────
     volatile boolean     alertActive    = false;
@@ -195,33 +197,49 @@ public class LocationService extends Service implements LocationListener {
         isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
     }
 
-    private final Runnable gpsRestart = new Runnable() {
+    // GPS watchdog: fires every 60s; restarts GPS if no fix for 2× updateInterval (min 2 min)
+    private final Runnable gpsWatchdog = new Runnable() {
         @Override public void run() {
-            writeLog("GPS duty cycle: restarting for next fix window");
-            startLocationUpdates();
+            long ageMs   = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
+            long threshMs = Math.max(updateInterval * 2, 120_000L);
+            boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            if (ageMs > threshMs) {
+                writeLog(String.format("GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s sat=%d — restarting GPS",
+                    ageMs == Long.MAX_VALUE ? -1 : ageMs / 1000, threshMs / 1000,
+                    provEnabled ? "enabled" : "DISABLED", csvSatellites));
+                try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
+                startLocationUpdates();
+            }
+            gpsHandler.postDelayed(this, 60_000L);
         }
     };
-
-    private void scheduleGpsDutyCycle() {
-        if (numGpsFixes <= 1) return; // GPS already fires at updateInterval; no gain
-        long gpsInterval  = Math.min(updateInterval, 5_000L);
-        long gpsOnNeeded  = numGpsFixes * gpsInterval + 5_000L; // fixes + 5s buffer
-        long gpsOffTime   = updateInterval - gpsOnNeeded;
-        if (gpsOffTime < 15_000L) return; // not worth cycling (saves < 15s)
-        try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
-        writeLog(String.format("GPS duty cycle: off for %ds, on for %ds per %ds interval",
-            gpsOffTime / 1000, gpsOnNeeded / 1000, updateInterval / 1000));
-        gpsHandler.removeCallbacks(gpsRestart);
-        gpsHandler.postDelayed(gpsRestart, gpsOffTime);
-    }
 
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
             if (hasLocation) {
+                long rawAgeMs = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
+                if (rawAgeMs > updateInterval * 2) {
+                    boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+                    writeLog(String.format("WARNING: GPS fix stale — age=%ds provider=%s sat=%d",
+                        rawAgeMs == Long.MAX_VALUE ? -1 : rawAgeMs / 1000,
+                        provEnabled ? "enabled" : "DISABLED", csvSatellites));
+                }
+                final boolean hadNewFixes = !fixBuffer.isEmpty();
                 final double[] avg = computeAveragedPosition();
-                scheduleGpsDutyCycle();
+                if (hadNewFixes) {
+                    lastFixTimeMs = System.currentTimeMillis();
+                    updateNotification(String.format(Locale.US, "%.5f, %.5f", avg[0], avg[1]));
+                } else {
+                    writeLog("Log tick: no new fixes this cycle — using cached position, fix age unchanged");
+                }
+                fixBuffer.clear(); // reset for next cycle
                 new Thread(new Runnable() {
                     @Override public void run() {
+                        // Push averaged position + satellite count to UI at interval cadence
+                        if (uiListener != null) {
+                            uiListener.onLocationUpdate(avg[0], avg[1], avg[2], (float) avg[3]);
+                            uiListener.onSatellitesUpdate(csvSatellites);
+                        }
                         String w3w;
                         if (w3wBackoffTicks > 0) {
                             w3wBackoffTicks--;
@@ -271,7 +289,9 @@ public class LocationService extends Service implements LocationListener {
                     }
                 }).start();
             } else {
-                writeLog("Log tick: no GPS fix yet, skipping");
+                boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+                writeLog(String.format("Log tick: no GPS fix yet — provider=%s sat=%d",
+                    provEnabled ? "enabled" : "DISABLED", csvSatellites));
             }
             logHandler.postDelayed(this, updateInterval);
         }
@@ -310,13 +330,17 @@ public class LocationService extends Service implements LocationListener {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
+                @Override public void onStarted() { writeLog("GNSS hardware started"); }
+                @Override public void onStopped() { writeLog("GNSS hardware stopped"); }
+                @Override public void onFirstFix(int ttffMillis) {
+                    writeLog("GNSS first fix: TTFF=" + ttffMillis + "ms");
+                }
                 @Override public void onSatelliteStatusChanged(GnssStatus status) {
                     int used = 0;
                     for (int i = 0; i < status.getSatelliteCount(); i++) {
                         if (status.usedInFix(i)) used++;
                     }
                     csvSatellites = used;
-                    if (uiListener != null) uiListener.onSatellitesUpdate(csvSatellites);
                 }
             };
         }
@@ -360,7 +384,7 @@ public class LocationService extends Service implements LocationListener {
         super.onDestroy();
         logHandler.removeCallbacks(logTick);
         uploadHandler.removeCallbacks(uploadTick);
-        gpsHandler.removeCallbacks(gpsRestart);
+        gpsHandler.removeCallbacks(gpsWatchdog);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
@@ -398,7 +422,7 @@ public class LocationService extends Service implements LocationListener {
         writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " map=" + mapType
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
-        gpsHandler.removeCallbacks(gpsRestart);
+        gpsHandler.removeCallbacks(gpsWatchdog);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
         logHandler.removeCallbacks(logTick);
@@ -415,25 +439,41 @@ public class LocationService extends Service implements LocationListener {
     // ── Location ──────────────────────────────────────────────────────────────
 
     void startLocationUpdates() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
+        boolean fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        boolean coarseGranted = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        writeLog("startLocationUpdates: fine=" + fineGranted + " coarse=" + coarseGranted);
+        if (!fineGranted) {
             writeLog("Location permission not granted — updates not started");
             return;
         }
         try {
-            // Sample more frequently when averaging multiple fixes
-            long gpsInterval = (numGpsFixes > 1) ? Math.min(updateInterval, 5_000L) : updateInterval;
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, gpsInterval, 0, this);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
+            // Always request at 1s to keep GPS warm — duty cycling causes long TTFF on Android 15
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0, this);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
+                try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
                 locationManager.registerGnssStatusCallback(gnssCallback);
-            writeLog("Requesting GPS updates every " + (gpsInterval/1000) + "s"
-                + " (averaging " + numGpsFixes + " fixes)");
+            }
+            // Network provider as fast fallback — sets hasLocation while GPS warms up
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 5000L, 0, this);
+                writeLog("Network provider also requested as fallback");
+            }
+            boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            writeLog("Requesting GPS updates every 1s (min " + numGpsFixes + " fixes/cycle required)"
+                + " gps=" + (gpsEnabled ? "enabled" : "DISABLED"));
+            // Start watchdog
+            gpsHandler.removeCallbacks(gpsWatchdog);
+            gpsHandler.postDelayed(gpsWatchdog, 60_000L);
+            // Seed with last known location if available
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last == null)
                 last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
             if (last != null) {
-                writeLog("Using last known location age=" + ((System.currentTimeMillis() - last.getTime())/1000) + "s");
+                long ageS = (System.currentTimeMillis() - last.getTime()) / 1000;
+                writeLog("Last known location: age=" + ageS + "s acc=" + last.getAccuracy()
+                    + "m provider=" + last.getProvider());
                 onLocationChanged(last);
             } else {
                 writeLog("No last known location available");
@@ -449,23 +489,27 @@ public class LocationService extends Service implements LocationListener {
         csvLon      = loc.getLongitude();
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
-        // Rolling fix buffer for averaging
-        if (fixBuffer.size() >= Math.max(numGpsFixes, 1)) fixBuffer.remove(0);
+        lastRawFixTimeMs = System.currentTimeMillis();
+        // Accumulate all fixes during this update cycle
         fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
         if (!hasLocation) {
             hasLocation = true;
-            writeLog("First GPS fix received");
+            writeLog(String.format(Locale.US,
+                "First GPS fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
+                csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
+        } else if (csvAccuracy > 100f) {
+            writeLog(String.format(Locale.US,
+                "GPS fix poor accuracy: acc=%.1fm sat=%d", csvAccuracy, csvSatellites));
         }
-        writeLog(String.format(Locale.US,
-            "GPS fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
-            csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
-        updateNotification(String.format(Locale.US, "%.5f, %.5f", csvLat, csvLon));
-        if (uiListener != null)
-            uiListener.onLocationUpdate(csvLat, csvLon, csvAlt, csvAccuracy);
     }
 
     @Override public void onStatusChanged(String p, int s, Bundle e) {}
-    @Override public void onProviderEnabled(String p)  { writeLog("Provider enabled: "  + p); }
+    @Override public void onProviderEnabled(String p) {
+        writeLog("Provider enabled: " + p + " — restarting location updates");
+        gpsHandler.removeCallbacks(gpsWatchdog);
+        try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
+        startLocationUpdates();
+    }
     @Override public void onProviderDisabled(String p) { writeLog("Provider disabled: " + p); }
 
     // ── Notification ──────────────────────────────────────────────────────────
@@ -1150,6 +1194,10 @@ public class LocationService extends Service implements LocationListener {
     private double[] computeAveragedPosition() {
         int n = fixBuffer.size();
         if (n == 0) return new double[]{csvLat, csvLon, csvAlt, csvAccuracy};
+        if (n < numGpsFixes) {
+            writeLog(String.format("GPS avg: only %d fix(es) this cycle (min=%d) — using best available",
+                n, numGpsFixes));
+        }
         if (n == 1) return new double[]{fixBuffer.get(0)[0], fixBuffer.get(0)[1],
                                         fixBuffer.get(0)[2], fixBuffer.get(0)[3]};
 
