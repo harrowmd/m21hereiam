@@ -218,11 +218,15 @@ public class LocationService extends Service implements LocationListener {
         @Override public void run() {
             if (hasLocation) {
                 long rawAgeMs = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
+                long fixAgeS  = lastFixTimeMs > 0 ? (System.currentTimeMillis() - lastFixTimeMs) / 1000 : -1;
+                boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+                writeLog(String.format("Log tick: fixes-collected=%d sat=%d GPS-fix-age=%s provider=%s",
+                    fixBuffer.size(), csvSatellites,
+                    fixAgeS < 0 ? "--" : fixAgeS + "s",
+                    provEnabled ? "ok" : "DISABLED"));
                 if (rawAgeMs > updateInterval * 2) {
-                    boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-                    writeLog(String.format("WARNING: GPS fix stale — age=%ds provider=%s sat=%d",
-                        rawAgeMs == Long.MAX_VALUE ? -1 : rawAgeMs / 1000,
-                        provEnabled ? "enabled" : "DISABLED", csvSatellites));
+                    writeLog(String.format("WARNING: last raw fix was %ds ago — GPS may have lost lock",
+                        rawAgeMs == Long.MAX_VALUE ? -1 : rawAgeMs / 1000));
                 }
                 final boolean hadNewFixes = !fixBuffer.isEmpty();
                 final double[] avg = computeAveragedPosition();
@@ -1190,7 +1194,10 @@ public class LocationService extends Service implements LocationListener {
 
     // ── CSV / GPX / KML saving ────────────────────────────────────────────────
 
-    /** Average the fix buffer, removing outliers beyond 2 std devs from centroid. */
+    /** Average the fix buffer, removing outliers beyond 2 std devs from centroid.
+     *  When significant movement is detected, uses only the most recent numGpsFixes
+     *  fixes to avoid averaging over the journey path (which gives a position from
+     *  30s ago at speed). */
     private double[] computeAveragedPosition() {
         int n = fixBuffer.size();
         if (n == 0) return new double[]{csvLat, csvLon, csvAlt, csvAccuracy};
@@ -1201,33 +1208,52 @@ public class LocationService extends Service implements LocationListener {
         if (n == 1) return new double[]{fixBuffer.get(0)[0], fixBuffer.get(0)[1],
                                         fixBuffer.get(0)[2], fixBuffer.get(0)[3]};
 
-        // Centroid
+        // Detect movement: compare first and last fix in cycle
+        double[] firstFix = fixBuffer.get(0);
+        double[] lastFix  = fixBuffer.get(n - 1);
+        double dlatM = (lastFix[0] - firstFix[0]) * 111000;
+        double dlonM = (lastFix[1] - firstFix[1]) * 111000;
+        double moveMetres = Math.sqrt(dlatM * dlatM + dlonM * dlonM);
+        boolean moving = moveMetres > 25.0;
+
+        // When moving, use only the most recent numGpsFixes fixes so the result
+        // reflects current position rather than the midpoint of the journey
+        java.util.List<double[]> pool;
+        if (moving) {
+            int useFrom = Math.max(0, n - Math.max(numGpsFixes, 1));
+            pool = fixBuffer.subList(useFrom, n);
+        } else {
+            pool = fixBuffer;
+        }
+        int pn = pool.size();
+
+        // Centroid of pool
         double meanLat = 0, meanLon = 0;
-        for (double[] f : fixBuffer) { meanLat += f[0]; meanLon += f[1]; }
-        meanLat /= n; meanLon /= n;
+        for (double[] f : pool) { meanLat += f[0]; meanLon += f[1]; }
+        meanLat /= pn; meanLon /= pn;
 
         // Distance of each fix from centroid
-        double[] dists = new double[n];
+        double[] dists = new double[pn];
         double meanDist = 0;
-        for (int i = 0; i < n; i++) {
-            double dlat = fixBuffer.get(i)[0] - meanLat;
-            double dlon = fixBuffer.get(i)[1] - meanLon;
+        for (int i = 0; i < pn; i++) {
+            double dlat = pool.get(i)[0] - meanLat;
+            double dlon = pool.get(i)[1] - meanLon;
             dists[i] = Math.sqrt(dlat * dlat + dlon * dlon);
             meanDist += dists[i];
         }
-        meanDist /= n;
+        meanDist /= pn;
 
         // Standard deviation of distances
         double var = 0;
         for (double d : dists) var += (d - meanDist) * (d - meanDist);
-        double stdDev = Math.sqrt(var / n);
+        double stdDev = Math.sqrt(var / pn);
         double threshold = meanDist + 2 * stdDev;
 
         // Keep fixes within threshold
         java.util.List<double[]> kept = new java.util.ArrayList<>();
-        for (int i = 0; i < n; i++)
-            if (dists[i] <= threshold) kept.add(fixBuffer.get(i));
-        if (kept.isEmpty()) kept = new java.util.ArrayList<>(fixBuffer);
+        for (int i = 0; i < pn; i++)
+            if (dists[i] <= threshold) kept.add(pool.get(i));
+        if (kept.isEmpty()) kept = new java.util.ArrayList<>(pool);
 
         // Altitude outlier rejection within kept fixes (same 2-std-dev approach)
         double meanAlt = 0;
@@ -1246,9 +1272,36 @@ public class LocationService extends Service implements LocationListener {
         double lat = 0, lon = 0, alt = 0, acc = 0;
         for (double[] f : keptAlt) { lat += f[0]; lon += f[1]; alt += f[2]; acc += f[3]; }
         int k = keptAlt.size();
-        writeLog(String.format(Locale.US,
-            "GPS avg: %d/%d fixes kept (alt filter: %d/%d), lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm",
-            kept.size(), n, k, kept.size(), lat/k, lon/k, alt/k, acc/k));
+
+        // Accuracy and altitude range across pool fixes (for diagnostics)
+        double accMin = Double.MAX_VALUE, accMax = 0, altMin = Double.MAX_VALUE, altMax = -Double.MAX_VALUE;
+        for (double[] f : pool) {
+            if (f[3] < accMin) accMin = f[3];
+            if (f[3] > accMax) accMax = f[3];
+            if (f[2] < altMin) altMin = f[2];
+            if (f[2] > altMax) altMax = f[2];
+        }
+
+        int posRejected = pn - kept.size();
+        int altRejected = kept.size() - k;
+        double threshMetres = threshold * 111000;
+
+        StringBuilder sb = new StringBuilder();
+        if (moving)
+            sb.append(String.format(Locale.US,
+                "GPS avg: MOVING %.0fm in cycle — using last %d of %d fixes | ", moveMetres, pn, n));
+        else
+            sb.append(String.format(Locale.US, "GPS avg: static (moved <25m) | %d fixes | ", n));
+        sb.append(String.format(Locale.US, "pos-filter: %d kept, %d rejected", pn, posRejected));
+        if (posRejected > 0)
+            sb.append(String.format(Locale.US, " (outlier threshold ~%.0fm from centroid)", threshMetres));
+        sb.append(String.format(Locale.US, " | alt-filter: %d kept, %d rejected", k, altRejected));
+        if (altRejected > 0)
+            sb.append(String.format(Locale.US, " (alt range %.1f-%.1fm)", altMin, altMax));
+        sb.append(String.format(Locale.US,
+            " | result: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm (acc range %.0f-%.0fm)",
+            lat/k, lon/k, alt/k, acc/k, accMin, accMax));
+        writeLog(sb.toString());
         return new double[]{lat / k, lon / k, alt / k, acc / k};
     }
 
