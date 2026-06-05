@@ -308,6 +308,18 @@ produce the logged position. If fewer than this minimum were received
 (e.g. due to poor GPS conditions), the app still logs the best available
 average but records a warning in the `.txt` log.
 
+**Movement detection:** the app automatically detects whether the phone
+is stationary or moving by comparing the first and last fix of the cycle.
+
+- **Stationary** (moved <25 m): all fixes in the cycle are averaged,
+  giving the best possible noise reduction.
+- **Moving** (moved >25 m, i.e. walking pace or faster): only the most
+  recent **Num GPS fixes** fixes are averaged. This ensures the logged
+  position reflects where you are *now*, not the midpoint of the
+  journey. At 60 km/h this avoids a ~500 m lag in the recorded position.
+
+The `.txt` log records which mode was used and how many fixes were included.
+
 ### Track colour
 Colour of the line drawn between the GPS track dots on the map.
 Default: `None` (no line, dots only).
@@ -443,6 +455,35 @@ Each GPS fix is written as both:
   as a waypoint/POI by apps such as Magic Earth.
 - A **`<LineString>` track** connecting all fixes for the day — displayed as
   a route line in Google Earth and other KML viewers.
+
+### GPS status in the TXT log
+
+At every update interval the app writes a summary line showing how many
+fixes were collected, satellite count, GPS fix age, and provider status:
+
+```
+Log tick: fixes-collected=58 sat=8 GPS-fix-age=61s provider=ok
+```
+
+This is followed by the averaging result. When stationary:
+
+```
+GPS avg: static (moved <25m) | 58 fixes | pos-filter: 56 kept, 2 rejected (outlier threshold ~7m from centroid) | alt-filter: 56 kept, 0 rejected | result: lat=53.899444 lon=-1.684526 alt=140.8m acc=12.6m (acc range 8-31m)
+```
+
+When moving (e.g. in a car):
+
+```
+GPS avg: MOVING 820m in cycle — using last 5 of 58 fixes | pos-filter: 5 kept, 0 rejected | alt-filter: 5 kept, 0 rejected | result: lat=53.912341 lon=-1.701234 alt=52.0m acc=8.3m (acc range 7-11m)
+```
+
+If GPS is struggling, warnings appear:
+
+```
+Log tick: fixes-collected=2 sat=2 GPS-fix-age=183s provider=ok
+GPS avg: only 2 fix(es) this cycle (min=5) — using best available
+WARNING: last raw fix was 183s ago — GPS may have lost lock
+```
 
 ### What3Words in the TXT log
 
@@ -647,9 +688,9 @@ The app version, build date, and update status are shown at the bottom
 of the Settings dialog, for example:
 
 ```
-Here I Am Now  v2.5 (16)
-Built: 2026-06-05 16:42
-Up to date (v2.5)
+Here I Am Now  v2.5.1 (17)
+Built: 2026-06-05 20:24
+Up to date (v2.5.1)
 ```
 
 Source code and releases: https://github.com/harrowmd/m21hereiam
