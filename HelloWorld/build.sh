@@ -29,6 +29,7 @@ $BUILD_TOOLS/aapt2 link -o base_unsigned.apk -I $PLATFORM --manifest AndroidMani
 
 javac -source 8 -target 8 -classpath $PLATFORM -d obj \
   gen/com/example/m21hereiam/R.java \
+  src/com/example/m21hereiam/HereIamApplication.java \
   src/com/example/m21hereiam/MapView.java \
   src/com/example/m21hereiam/LocationService.java \
   src/com/example/m21hereiam/BootReceiver.java \

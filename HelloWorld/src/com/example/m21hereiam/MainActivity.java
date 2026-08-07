@@ -232,6 +232,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             });
 
         requestNeededPermissions();
+        requestIgnoreBatteryOptimizationsIfNeeded();
     }
 
     @Override
@@ -1254,6 +1255,21 @@ public class MainActivity extends Activity implements LocationService.Listener {
             requestPermissions(
                 new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
                 PERM_REQUEST_BG);
+        }
+    }
+
+    // Re-checked on every app launch: some OEMs (and OS updates) silently reset
+    // this exemption, which lets the background GPS service get killed on idle.
+    private void requestIgnoreBatteryOptimizationsIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        android.os.PowerManager pm =
+            (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            try {
+                Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception ignored) {}
         }
     }
 
