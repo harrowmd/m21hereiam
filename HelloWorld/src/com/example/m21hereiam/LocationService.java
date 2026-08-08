@@ -181,6 +181,13 @@ public class LocationService extends Service implements LocationListener {
     long    lastFixTimeMs    = 0;    // time of last successful averaged-position calculation (UI display)
     long    lastRawFixTimeMs = 0;    // time of last raw GPS fix arrival (watchdog)
 
+    // Held for the life of the service and renewed by the watchdog every 60s. Without this,
+    // the OS can freeze the whole process during idle periods (screen off, no interaction) even
+    // with the battery-optimization exemption granted — Handler timers just stop firing for
+    // hours and everything (log ticks, watchdog, uploads) resumes in a burst once unfrozen.
+    private static final long WAKELOCK_RENEW_MS = 15 * 60 * 1000L;
+    private PowerManager.WakeLock cpuWakeLock;
+
     // ── Alert state ───────────────────────────────────────────────────────────
     volatile boolean     alertActive    = false;
     volatile boolean     alertCancelled = false;
@@ -210,6 +217,7 @@ public class LocationService extends Service implements LocationListener {
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
                 startLocationUpdates();
             }
+            if (cpuWakeLock != null) cpuWakeLock.acquire(WAKELOCK_RENEW_MS);
             gpsHandler.postDelayed(this, 60_000L);
         }
     };
@@ -332,6 +340,11 @@ public class LocationService extends Service implements LocationListener {
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
 
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hereiamnow:tracking");
+        cpuWakeLock.setReferenceCounted(false);
+        cpuWakeLock.acquire(WAKELOCK_RENEW_MS);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
                 @Override public void onStarted() { writeLog("GNSS hardware started"); }
@@ -393,6 +406,7 @@ public class LocationService extends Service implements LocationListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
         try { unregisterReceiver(batteryReceiver); } catch (Exception ignored) {}
+        if (cpuWakeLock != null && cpuWakeLock.isHeld()) cpuWakeLock.release();
     }
 
     // ── Settings ──────────────────────────────────────────────────────────────
