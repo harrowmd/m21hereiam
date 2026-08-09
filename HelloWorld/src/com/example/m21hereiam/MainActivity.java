@@ -674,6 +674,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         ed.putBoolean(CATEGORIES[i].prefKey, nearbyEnabled[i]);
                     }
                     ed.apply();
+                    if (bound) service.writeSettingsSnapshot();
                 }
             })
             .setNegativeButton("Cancel", null)
@@ -938,6 +939,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putString (LocationService.PREF_ALERT_VOLUME,     service.alertVolume)
                         .apply();
                     service.applySettings();
+                    service.writeSettingsSnapshot();
                     loadTrackPoints(); // refresh map with new filters
                 }
             })
@@ -1045,6 +1047,16 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "(uploaded immediately), then plays the sound 4 times at maximum volume with the "
             + "torch flashing and phone vibrating. Tap <b>Cancel Alert</b> to stop. "
             + "The trigger file is renamed to <i>YYYY-MM-DD-{alert code}.mp3</i> as a timestamped record.<br><br>"
+
+            + "<b>Remote Settings</b><br>"
+            + "Every settings change is saved to <i>settings-hia.json</i> in the Nextcloud session "
+            + "folder (with the previous version kept as <i>settings-hia.bak</i>). Editing that file "
+            + "directly on Nextcloud changes the app's settings remotely — at the next upload check "
+            + "it downloads the file and applies anything different, live, with no restart needed. "
+            + "Nextcloud URL, username, and password are never applied this way, even if changed in "
+            + "the file — editing those wrong remotely would cut off the phone's only way back to "
+            + "Nextcloud. If the app's local settings are ever wiped (factory reset, cleared app "
+            + "data), it restores from this file automatically on next start.<br><br>"
 
             + "<b>Log files</b> (Documents folder, auto-deleted after retention period)<br>"
             + "YYYY-MM-DD-hia.csv — one row per GPS fix, columns:<br>"

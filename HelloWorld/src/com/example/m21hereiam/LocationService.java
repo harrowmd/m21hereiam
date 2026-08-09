@@ -69,9 +69,15 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.TimeZone;
+import org.json.JSONObject;
 
 public class LocationService extends Service implements LocationListener {
 
@@ -345,6 +351,7 @@ public class LocationService extends Service implements LocationListener {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        restoreSettingsIfWiped();
         loadSettings();
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
@@ -574,6 +581,165 @@ public class LocationService extends Service implements LocationListener {
             .notify(NOTIF_ID, buildNotification(text));
     }
 
+    // ── Settings backup / remote sync ────────────────────────────────────────
+    // settings-hia.json is a full snapshot of SharedPreferences, uploaded to Nextcloud
+    // alongside the log files each cycle, with a settings-hia.bak kept from the previous write.
+    // Two independent uses:
+    //  1. Local self-heal: if SharedPreferences is ever found wiped (factory reset, OS bug,
+    //     "clear app data"), restore from the local copy of json/bak at next startup.
+    //  2. Remote config: every upload cycle, fetch Nextcloud's copy and apply any changes made
+    //     by editing the file directly on Nextcloud — no restart needed, settings already apply
+    //     live via applySettings(). Nextcloud URL/user/password are never applied this way: a
+    //     bad edit there would cut off the phone's only channel back to Nextcloud, with no way
+    //     to recover without physical access to the phone.
+
+    private static final String SETTINGS_FILENAME     = "settings-hia.json";
+    private static final String SETTINGS_BAK_FILENAME = "settings-hia.bak";
+    private static final Set<String> REMOTE_SETTINGS_EXCLUDED = new HashSet<>(
+        Arrays.asList(PREF_NC_URL, PREF_NC_USER, PREF_NC_PASS));
+
+    // Numeric JSON values can round-trip as Integer or Long depending on the parser — compare
+    // numerically rather than via equals() so a harmless type difference isn't seen as a change.
+    private boolean settingsValuesEqual(Object a, Object b) {
+        if (a == null || b == null) return a == b;
+        if (a instanceof Number && b instanceof Number)
+            return ((Number) a).longValue() == ((Number) b).longValue();
+        return a.equals(b);
+    }
+
+    // Applies every key in json to the editor (except those in exclude) whose value differs
+    // from what's currently in `current`. Returns the list of keys actually changed.
+    private List<String> applyJsonToPrefs(JSONObject json, SharedPreferences.Editor editor,
+                                           Set<String> exclude, SharedPreferences current) {
+        List<String> changed = new ArrayList<>();
+        java.util.Map<String, ?> existingAll = current.getAll();
+        Iterator<String> keys = json.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (exclude != null && exclude.contains(key)) continue;
+            Object value = json.opt(key);
+            if (value == null || settingsValuesEqual(value, existingAll.get(key))) continue;
+            if (value instanceof Boolean)      editor.putBoolean(key, (Boolean) value);
+            else if (value instanceof Number)  editor.putInt(key, ((Number) value).intValue());
+            else if (value instanceof String)  editor.putString(key, (String) value);
+            else continue; // unsupported type — skip
+            changed.add(key);
+        }
+        return changed;
+    }
+
+    // Snapshot all current settings to Documents/settings-hia.json, keeping the previous
+    // version as settings-hia.bak. Atomic: written to a temp file then renamed into place, so a
+    // write interrupted mid-way never leaves a half-written settings-hia.json behind.
+    void writeSettingsSnapshot() {
+        try {
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            JSONObject json = new JSONObject(p.getAll());
+            File dir    = docsDir();
+            File target = new File(dir, SETTINGS_FILENAME);
+            File bak    = new File(dir, SETTINGS_BAK_FILENAME);
+            File tmp    = new File(dir, SETTINGS_FILENAME + ".tmp");
+
+            FileWriter fw = new FileWriter(tmp, false);
+            fw.write(json.toString(2));
+            fw.close();
+
+            if (target.exists()) {
+                if (bak.exists()) bak.delete();
+                target.renameTo(bak);
+            }
+            tmp.renameTo(target);
+        } catch (Exception e) {
+            writeLog("Settings snapshot failed: " + e.getMessage());
+        }
+    }
+
+    // Called once at service start, before loadSettings(). If SharedPreferences is completely
+    // empty (fresh install, or wiped), try to self-heal from the local settings-hia.json, then
+    // settings-hia.bak. If neither parses, do nothing — loadSettings() already falls back to
+    // hardcoded defaults for every key on its own.
+    private void restoreSettingsIfWiped() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!p.getAll().isEmpty()) return;
+        File dir = docsDir();
+        for (String name : new String[]{SETTINGS_FILENAME, SETTINGS_BAK_FILENAME}) {
+            File f = new File(dir, name);
+            if (!f.exists()) continue;
+            try {
+                JSONObject json = new JSONObject(readFile(f));
+                SharedPreferences.Editor editor = p.edit();
+                List<String> restored = applyJsonToPrefs(json, editor, null, p);
+                editor.apply();
+                writeLog("Settings restored from " + name + " (" + restored.size()
+                    + " key(s), SharedPreferences was empty)");
+                return;
+            } catch (Exception e) {
+                writeLog("Settings restore from " + name + " failed: " + e.getMessage());
+            }
+        }
+    }
+
+    // Fetch Nextcloud's copy of settings-hia.json and apply any changes (except the excluded
+    // connection fields) — this is how settings get changed remotely, no restart involved.
+    private void checkRemoteSettings(String sessionDir, String auth) {
+        try {
+            String url = sessionDir + enc(SETTINGS_FILENAME);
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestMethod("GET");
+            c.setRequestProperty("Authorization", auth);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(15000);
+            int code = c.getResponseCode();
+            if (code != 200) {
+                writeLog("Remote settings check: " + SETTINGS_FILENAME + " not found (HTTP " + code + ")");
+                c.disconnect();
+                return;
+            }
+            InputStream is = c.getInputStream();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+            is.close();
+            c.disconnect();
+            JSONObject remote = new JSONObject(baos.toString("UTF-8"));
+
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            List<String> ignored = new ArrayList<>();
+            for (String key : REMOTE_SETTINGS_EXCLUDED) {
+                if (remote.has(key) && !settingsValuesEqual(remote.opt(key), p.getAll().get(key)))
+                    ignored.add(key);
+            }
+            if (!ignored.isEmpty())
+                writeLog("Remote settings: ignoring change(s) to " + ignored
+                    + " — connection fields are never applied remotely");
+
+            SharedPreferences.Editor editor = p.edit();
+            List<String> changed = applyJsonToPrefs(remote, editor, REMOTE_SETTINGS_EXCLUDED, p);
+            if (changed.isEmpty()) {
+                writeLog("Remote settings check: no changes");
+                return;
+            }
+            editor.apply();
+            writeLog("Remote settings: applied change(s) to " + changed);
+            loadSettings();
+            applySettings();
+            writeSettingsSnapshot();
+        } catch (Exception e) {
+            writeLog("Remote settings check failed: " + e.getMessage());
+        }
+    }
+
+    private String readFile(File f) throws IOException {
+        FileInputStream fis = new FileInputStream(f);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = fis.read(buf)) != -1) baos.write(buf, 0, n);
+        fis.close();
+        return baos.toString("UTF-8");
+    }
+
     // ── Nextcloud upload ──────────────────────────────────────────────────────
 
     void uploadFiles() {
@@ -586,6 +752,7 @@ public class LocationService extends Service implements LocationListener {
         final File   dir   = docsDir();
         final String today = dateFmt.format(new Date());
 
+        writeSettingsSnapshot(); // keep settings-hia.json current before it's uploaded below
         writeLog("Upload starting: url=" + url + " user=" + user + " session=" + sess);
         new Thread(new Runnable() {
             @Override public void run() {
@@ -615,9 +782,16 @@ public class LocationService extends Service implements LocationListener {
                             writeLog("Skip (not found): " + today + suffix);
                         }
                     }
+                    File settingsFile = new File(dir, SETTINGS_FILENAME);
+                    if (settingsFile.exists()) {
+                        int code = putFile(settingsFile, sessionDir + enc(SETTINGS_FILENAME), auth);
+                        writeLog("PUT " + SETTINGS_FILENAME + " (" + settingsFile.length()
+                            + " bytes) \u2192 HTTP " + code);
+                    }
                     writeLog("Upload done: " + uploaded + " file(s) \u2192 " + sess);
                     if (!alert.isEmpty())
                         checkForAlert(alert, sessionDir, auth, dir);
+                    checkRemoteSettings(sessionDir, auth);
                     deleteOldNextcloudFiles(sessionDir, auth);
                 } catch (Exception e) {
                     writeLog("Upload failed: " + e.getMessage());
