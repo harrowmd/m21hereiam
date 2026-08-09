@@ -727,10 +727,18 @@ public class LocationService extends Service implements LocationListener {
             playAlertAudio(mp3);
             torchOff();
             writeLog("Alert: playback complete" + (alertCancelled ? " (cancelled)" : ""));
-            // Keep alertActive=true and button visible until user presses Cancel
+            if (isIncognitoAlert()) {
+                // No Cancel Alert button exists to rename the file — without this the same
+                // alert file keeps being found and re-triggered forever.
+                finishAlert("incognito playback complete — auto-cancelling (no Cancel button to do it)");
+            }
+            // Non-incognito: keep alertActive=true and button visible until user presses Cancel
         } catch (Exception e) {
             writeLog("Alert error: " + e.getMessage());
             torchOff();
+            if (isIncognitoAlert() && alertActive) {
+                finishAlert("auto-cancelling after error (incognito, no Cancel button to do it)");
+            }
         }
     }
 
@@ -816,9 +824,15 @@ public class LocationService extends Service implements LocationListener {
     }
 
     void cancelAlert() {
-        writeLog("Alert: cancelled by user");
         alertCancelled = true;
-        alertActive    = false;
+        finishAlert("cancelled by user");
+    }
+
+    // Shared by user-initiated cancel and incognito auto-cancel: stop playback/vibration/torch,
+    // rename the file on Nextcloud so it isn't found and re-triggered again, and notify the UI.
+    private void finishAlert(String reason) {
+        writeLog("Alert: " + reason);
+        alertActive = false;
         MediaPlayer mp = activePlayer;
         if (mp != null) {
             try { mp.stop(); mp.release(); } catch (Exception ignored) {}
