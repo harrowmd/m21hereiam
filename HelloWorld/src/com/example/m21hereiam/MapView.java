@@ -728,6 +728,9 @@ public class MapView extends View {
         if (showPhotoInfo) drawPhotoInfoOverlay(canvas, W, H);
     }
 
+    // NEAR ME / Settings buttons are 56dp tall with a 16dp top margin — clear them plus a gap
+    private static final float PHOTO_INFO_TOP_MARGIN_DP = 88f;
+
     private void drawPhotoInfoOverlay(Canvas canvas, int W, int H) {
         StringBuilder sb = new StringBuilder();
         sb.append(photoTitle.isEmpty() ? "(untitled)" : photoTitle);
@@ -736,6 +739,8 @@ public class MapView extends View {
         if (!photoComment.isEmpty()) sb.append("\n\n").append(photoComment);
         sb.append("\n\nsource: geograph.org.uk/photo/").append(photoId);
 
+        int topOffset = Math.round(PHOTO_INFO_TOP_MARGIN_DP * getResources().getDisplayMetrics().density);
+
         TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         tp.setColor(Color.WHITE);
         tp.setTextSize(30f);
@@ -743,14 +748,14 @@ public class MapView extends View {
         int textWidth = Math.max(1, W - pad * 2);
         StaticLayout layout = new StaticLayout(sb.toString(), tp, textWidth,
             Layout.Alignment.ALIGN_NORMAL, 1.15f, 0f, false);
-        int boxHeight = Math.min(layout.getHeight() + pad * 2, H * 3 / 4);
+        int boxHeight = Math.min(layout.getHeight() + pad * 2, H - topOffset);
 
         Paint bg = new Paint();
         bg.setColor(0xCC000000);
-        canvas.drawRect(0, 0, W, boxHeight, bg);
+        canvas.drawRect(0, topOffset, W, topOffset + boxHeight, bg);
 
         canvas.save();
-        canvas.translate(pad, pad);
+        canvas.translate(pad, topOffset + pad);
         canvas.clipRect(0, 0, textWidth, boxHeight - pad * 2);
         layout.draw(canvas);
         canvas.restore();

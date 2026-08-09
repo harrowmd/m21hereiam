@@ -115,8 +115,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 tvAlt.setText((Double.isNaN(service.depthM) || service.depthM == 0) ? "Depth: --"
                     : String.format("Depth: %.0f m", service.depthM));
             }
-            // Restore Cancel Alert button if alert was already active
-            if (service.alertActive)
+            // Restore Cancel Alert button if alert was already active (never shown for incognito alerts)
+            if (service.alertActive && !service.isIncognitoAlert())
                 btnCancelAlert.setVisibility(View.VISIBLE);
             if (!service.w3wAddress.isEmpty()) onW3wUpdate(service.w3wAddress);
         }
@@ -346,7 +346,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
     @Override
     public void onAlertStarted() {
         runOnUiThread(new Runnable() {
-            @Override public void run() { btnCancelAlert.setVisibility(View.VISIBLE); }
+            @Override public void run() {
+                if (bound && service.isIncognitoAlert()) return; // no visible sign of the alert
+                btnCancelAlert.setVisibility(View.VISIBLE);
+            }
         });
     }
 
@@ -1016,8 +1019,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "<b>Nextcloud / OwnCloud URL</b> — Base URL of your server, e.g. https://cloud.example.com<br>"
             + "<b>Username / Password</b> — Your Nextcloud login credentials.<br>"
             + "<b>Alert code</b> — Code used to trigger a remote alert (default: 911911).<br>"
-            + "<b>Alert volume</b> — Loudness of the alert siren. <i>Zero</i> mutes the sound but "
-            + "vibration, torch flash and photos still happen — useful for a silent alert.<br>"
+            + "<b>Alert volume</b> — Loudness of the alert siren. <i>Zero</i> runs the alert fully "
+            + "incognito: no sound, no vibration, no torch flash, and no Cancel Alert button on "
+            + "screen — nothing observable shows an alert is active. Photos are still taken and "
+            + "uploaded as normal.<br>"
             + "<b>Min satellites</b> — Minimum satellites required for a fix to appear on the map trail. "
             + "Set to 0 to show all fixes.<br>"
             + "<b>Display period</b> — Hours of track history shown on the map and used to calculate "

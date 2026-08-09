@@ -734,31 +734,34 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
-    // "Zero" mutes the alarm stream but the alert still runs its full course (vibration,
-    // torch, photos) — useful for a silent-but-otherwise-normal alert.
-    private int alertVolumeTarget(AudioManager am) {
-        int maxVol = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
-        double pct;
+    // "Zero" runs the alert fully incognito: silent, no vibration, no torch flash, and (handled
+    // in MainActivity) no Cancel Alert button — nothing observable gives away that it's active.
+    boolean isIncognitoAlert() { return "Zero".equals(alertVolume); }
+
+    private float alertVolumeGain() {
         switch (alertVolume) {
-            case "Zero":   pct = 0.0;  break;
-            case "Low":    pct = 0.25; break;
-            case "Medium": pct = 0.6;  break;
+            case "Zero":   return 0f;
+            case "Low":    return 0.25f;
+            case "Medium": return 0.6f;
             case "High":
-            default:       pct = 1.0;  break;
+            default:       return 1f;
         }
-        return (int) Math.round(maxVol * pct);
     }
 
     // Play loop extracted so volume is always restored
     private void playAlertAudio(File mp3) throws Exception {
         AudioManager am  = (AudioManager) getSystemService(AUDIO_SERVICE);
         Vibrator      vib = (Vibrator)     getSystemService(VIBRATOR_SERVICE);
-        int origVol   = am.getStreamVolume(AudioManager.STREAM_ALARM);
-        int maxVol    = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
-        int targetVol = alertVolumeTarget(am);
-        am.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0);
-        writeLog("Alert: alarm volume set to " + targetVol + "/" + maxVol
-            + " (" + alertVolume + "), was " + origVol);
+        boolean incognito = isIncognitoAlert();
+        float   gain      = alertVolumeGain();
+        int origVol = am.getStreamVolume(AudioManager.STREAM_ALARM);
+        int maxVol  = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+        // Set the stream volume to match too — belt and braces, since some devices enforce a
+        // non-zero floor on the alarm stream. The per-player setVolume() below is what actually
+        // guarantees true silence for "Zero" regardless of any such floor.
+        am.setStreamVolume(AudioManager.STREAM_ALARM, Math.round(maxVol * gain), 0);
+        writeLog("Alert: volume=" + alertVolume + " (gain=" + gain + ")"
+            + (incognito ? " — running incognito: no sound, no vibration, no torch" : ""));
         // Vibration pattern: 400ms on, 200ms off, repeating (in sync with torch)
         long[] vibePattern = {0, 400, 200};
         try {
@@ -771,8 +774,11 @@ public class LocationService extends Service implements LocationListener {
                         .build());
                     activePlayer.setDataSource(mp3.getAbsolutePath());
                     activePlayer.prepare();
-                    torchOn();
-                    vibrateStart(vib, vibePattern);
+                    activePlayer.setVolume(gain, gain);
+                    if (!incognito) {
+                        torchOn();
+                        vibrateStart(vib, vibePattern);
+                    }
                     activePlayer.start();
                     writeLog("Alert: playing (" + (i + 1) + "/4)");
                     Thread.sleep(500);
