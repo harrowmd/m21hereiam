@@ -9,6 +9,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.os.Environment;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
@@ -18,11 +19,16 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
@@ -88,6 +94,10 @@ public class MapView extends View {
     private volatile boolean photoFetchInFlight = false;
     private final Random photoRandom = new Random();
 
+    // Search radius, shared with the "Near Me" search-radius setting
+    private int photoSearchRadiusKm = 5;
+    public void setPhotoSearchRadiusKm(int km) { photoSearchRadiusKm = Math.max(1, km); }
+
     // Photo metadata, captured for the info overlay and the log file
     private int    photoId      = -1;
     private String photoTitle   = "";
@@ -103,7 +113,7 @@ public class MapView extends View {
     private final Runnable hidePhotoInfoRunnable = new Runnable() {
         @Override public void run() {
             showPhotoInfo = false;
-            if (service != null) service.writeLog("Geograph: info overlay auto-hidden after 60s");
+            log("Geograph: info overlay auto-hidden after 60s");
             postInvalidate();
         }
     };
@@ -115,17 +125,13 @@ public class MapView extends View {
     private final Runnable photoRefreshRunnable = new Runnable() {
         @Override public void run() {
             if ("Photo".equals(mapType) && hasLocation) {
-                if (service != null) service.writeLog(String.format(Locale.US,
+                log(String.format(Locale.US,
                     "Geograph: periodic refresh fired (interval=%.1fh)", photoRefreshIntervalMs / 3600000.0));
                 fetchGeographPhoto(gpsLat, gpsLon);
             }
             photoRefreshHandler.postDelayed(this, photoRefreshIntervalMs);
         }
     };
-
-    // Set once the service is bound, so photo fetches can write to the shared log file
-    private LocationService service;
-    public void setService(LocationService s) { service = s; }
 
     private final ConcurrentHashMap<String, Bitmap>  tileCache    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight     = new ConcurrentHashMap<>();
@@ -391,9 +397,9 @@ public class MapView extends View {
         photoInfoHandler.removeCallbacks(hidePhotoInfoRunnable);
         if (showPhotoInfo) {
             photoInfoHandler.postDelayed(hidePhotoInfoRunnable, PHOTO_INFO_DURATION_MS);
-            if (service != null) service.writeLog("Geograph: info overlay shown for photo #" + photoId);
+            log("Geograph: info overlay shown for photo #" + photoId);
         } else {
-            if (service != null) service.writeLog("Geograph: info overlay hidden (button pressed again)");
+            log("Geograph: info overlay hidden (button pressed again)");
         }
         postInvalidate();
     }
@@ -605,24 +611,53 @@ public class MapView extends View {
                         return;
                     }
                     log("Geograph: " + ids.size() + " candidate photo(s) found near " + loc
-                        + " — ids=" + ids);
-                    int id = ids.get(photoRandom.nextInt(ids.size()));
+                        + " — ids=" + ids + " — filtering to " + photoSearchRadiusKm + "km radius");
+                    List<Integer> shuffled = new ArrayList<>(ids);
+                    Collections.shuffle(shuffled, photoRandom);
 
-                    String infoUrl  = String.format(Locale.US, GEOGRAPH_INFO_URL, id);
-                    String infoJson = httpGetText(infoUrl);
-                    JSONObject info = new JSONObject(infoJson);
-                    String imgUrl   = info.getString("imgserver") + info.getString("image");
-                    String title    = info.optString("title", "");
-                    String comment  = info.optString("comment", "");
-                    String author   = info.optString("realname", "");
-                    String taken    = info.optString("taken", "");
-                    String gridRef  = info.optString("grid_reference", "");
-                    double photoLat = parseDoubleOrNaN(info.optString("wgs84_lat", ""));
-                    double photoLon = parseDoubleOrNaN(info.optString("wgs84_long", ""));
-                    String locDesc  = Double.isNaN(photoLat) ? "unknown"
-                        : String.format(Locale.US, "%.6f,%.6f (%.0fm from search point)",
-                            photoLat, photoLon, haversineMetres(lat, lon, photoLat, photoLon));
+                    int      id       = -1;
+                    JSONObject info   = null;
+                    String   imgUrl   = null;
+                    String   title = "", comment = "", author = "", taken = "", gridRef = "";
+                    double   photoLat = Double.NaN, photoLon = Double.NaN;
+                    int      checked  = 0;
+                    for (int candidateId : shuffled) {
+                        checked++;
+                        String infoUrl  = String.format(Locale.US, GEOGRAPH_INFO_URL, candidateId);
+                        JSONObject candInfo = new JSONObject(httpGetText(infoUrl));
+                        double cLat = parseDoubleOrNaN(candInfo.optString("wgs84_lat", ""));
+                        double cLon = parseDoubleOrNaN(candInfo.optString("wgs84_long", ""));
+                        double distKm = Double.isNaN(cLat) ? Double.NaN
+                            : haversineMetres(lat, lon, cLat, cLon) / 1000.0;
+                        if (Double.isNaN(distKm) || distKm > photoSearchRadiusKm) {
+                            log(String.format(Locale.US,
+                                "Geograph: candidate #%d rejected — %s", candidateId,
+                                Double.isNaN(distKm) ? "no location data"
+                                    : String.format(Locale.US, "%.1fkm away, outside %dkm radius",
+                                        distKm, photoSearchRadiusKm)));
+                            continue;
+                        }
+                        id       = candidateId;
+                        info     = candInfo;
+                        photoLat = cLat;
+                        photoLon = cLon;
+                        imgUrl   = info.getString("imgserver") + info.getString("image");
+                        title    = info.optString("title", "");
+                        comment  = info.optString("comment", "");
+                        author   = info.optString("realname", "");
+                        taken    = info.optString("taken", "");
+                        gridRef  = info.optString("grid_reference", "");
+                        break;
+                    }
+                    if (id < 0) {
+                        log("Geograph: none of " + ids.size() + " candidates (checked " + checked
+                            + ") were within " + photoSearchRadiusKm + "km of " + loc
+                            + " — keeping current photo");
+                        return;
+                    }
 
+                    String locDesc = String.format(Locale.US, "%.6f,%.6f (%.1fkm from search point)",
+                        photoLat, photoLon, haversineMetres(lat, lon, photoLat, photoLon) / 1000.0);
                     log(String.format(Locale.US,
                         "Geograph: selected photo #%d \"%s\" by %s, taken %s, grid ref %s, "
                         + "located %s, comment length=%d chars, image url=%s",
@@ -668,8 +703,23 @@ public class MapView extends View {
         });
     }
 
+    // Self-contained (no dependency on LocationService being bound/wired yet) — matches the
+    // format LocationService.writeLog() uses so both interleave correctly in the same txt log.
+    // New SimpleDateFormat per call: the fetch executor has 4 threads and SimpleDateFormat isn't
+    // thread-safe to share.
     private void log(String message) {
-        if (service != null) service.writeLog(message);
+        android.util.Log.d("HereIAmNow", message);
+        try {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+            if (!dir.exists()) dir.mkdirs();
+            Date now = new Date();
+            String dateStr = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(now);
+            String tsStr   = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(now);
+            File logFile = new File(dir, dateStr + "-hia.txt");
+            FileWriter fw = new FileWriter(logFile, true);
+            fw.write(tsStr + " " + message + "\n");
+            fw.close();
+        } catch (IOException ignored) {}
     }
 
     private static double parseDoubleOrNaN(String s) {

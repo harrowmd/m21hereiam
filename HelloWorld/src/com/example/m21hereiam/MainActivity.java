@@ -106,7 +106,6 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
             mapView.setTrackColour(service.trackColour);
-            mapView.setService(service);
             mapView.setPhotoRefreshIntervalHours(service.displayPeriodHours);
             mapView.setMapType(service.mapType);
             if ("Marine".equals(service.mapType)) {
@@ -203,6 +202,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
         android.content.SharedPreferences np =
             getSharedPreferences(LocationService.PREFS, MODE_PRIVATE);
         nearbyRadiusKm = np.getInt(PREF_NEARBY_RADIUS, 5);
+        mapView.setPhotoSearchRadiusKm(nearbyRadiusKm);
         for (int i = 0; i < CATEGORIES.length; i++)
             nearbyEnabled[i] = np.getBoolean(CATEGORIES[i].prefKey, false);
 
@@ -665,6 +665,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         nearbyRadiusKm = Math.max(1,
                             Integer.parseInt(editRadius.getText().toString().trim()));
                     } catch (NumberFormatException ignored) {}
+                    mapView.setPhotoSearchRadiusKm(nearbyRadiusKm);
                     android.content.SharedPreferences.Editor ed =
                         getSharedPreferences(LocationService.PREFS, MODE_PRIVATE).edit();
                     ed.putInt(PREF_NEARBY_RADIUS, nearbyRadiusKm);
@@ -991,7 +992,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "&nbsp;&nbsp;&#9733; <b>Churches</b> — purple<br>"
             + "Long-press <b>NEAR ME</b> (or tap <b>Near Me Settings</b> in the &#9881; Settings dialog) "
             + "to choose which categories to search and set the search radius. "
-            + "All categories are off by default.<br><br>"
+            + "All categories are off by default. The same search radius also limits how far away "
+            + "a Geograph.org.uk photo can be selected from in Photo display mode.<br><br>"
 
             + "<b>Data overlay — Land mode</b><br>"
             + "<b>Dist</b> — Total distance (km) between GPS fixes within the display period.<br>"
