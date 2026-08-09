@@ -792,14 +792,16 @@ public class MainActivity extends Activity implements LocationService.Listener {
         }
         layout.addView(spinnerTrackColour);
 
-        layout.addView(label("Map type"));
-        final String[] mapTypes = {"Land (OpenStreetMap)", "Marine (OpenSeaMap overlay)"};
+        layout.addView(label("Display type"));
+        final String[] mapTypes = {"Land (OpenStreetMap)", "Marine (OpenSeaMap overlay)",
+            "Photo (nearby Geograph.org.uk image)"};
         final android.widget.Spinner spinnerMapType = new android.widget.Spinner(this);
         android.widget.ArrayAdapter<String> mapTypeAdapter = new android.widget.ArrayAdapter<>(
             this, android.R.layout.simple_spinner_item, mapTypes);
         mapTypeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinnerMapType.setAdapter(mapTypeAdapter);
-        spinnerMapType.setSelection("Marine".equals(service.mapType) ? 1 : 0);
+        spinnerMapType.setSelection("Marine".equals(service.mapType) ? 1
+            : "Photo".equals(service.mapType) ? 2 : 0);
         layout.addView(spinnerMapType);
 
         final CheckBox checkBoot = new CheckBox(this);
@@ -882,7 +884,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     catch (NumberFormatException ignored) {}
                     service.trackColour = trackColours[spinnerTrackColour.getSelectedItemPosition()];
                     mapView.setTrackColour(service.trackColour);
-                    service.mapType = spinnerMapType.getSelectedItemPosition() == 1 ? "Marine" : "Land";
+                    int mapTypeSel = spinnerMapType.getSelectedItemPosition();
+                    service.mapType = mapTypeSel == 1 ? "Marine" : mapTypeSel == 2 ? "Photo" : "Land";
                     mapView.setMapType(service.mapType);
                     try { service.retentionDays =
                         Math.max(1, Integer.parseInt(editRetention.getText().toString().trim())); }
@@ -993,9 +996,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "Dist, Speed, and Ascent. Default: 12 h.<br>"
             + "<b>Track colour</b> — Line drawn between GPS dots on the map. "
             + "Options: None (default), Blue, Red, Yellow, Black.<br>"
-            + "<b>Map type</b> — <i>Land</i> shows OpenStreetMap tiles. "
+            + "<b>Display type</b> — <i>Land</i> shows OpenStreetMap tiles. "
             + "<i>Marine</i> adds an OpenSeaMap nautical overlay (buoys, lights, seamarks) on top of OSM, "
-            + "and switches the data overlay to show Course and Depth instead of Ascent and Alt.<br>"
+            + "and switches the data overlay to show Course and Depth instead of Ascent and Alt. "
+            + "<i>Photo</i> replaces the map with a nearby photograph from Geograph.org.uk — tap the "
+            + "re-centre button to fetch a different nearby photo.<br>"
             + "<b>Start on bootup</b> — Start automatically when the phone switches on.<br><br>"
 
             + "<b>Remote Alert</b><br>"

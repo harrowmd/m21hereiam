@@ -7,21 +7,28 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.json.JSONObject;
 
 public class MapView extends View {
 
@@ -63,6 +70,20 @@ public class MapView extends View {
     private boolean isPinching  = false;
 
     private String mapType = "Land";
+
+    // ── Photo display type (nearby Geograph.org.uk image instead of a map) ─────
+    private static final String GEOGRAPH_SEARCH_URL =
+        "https://api.geograph.org.uk/syndicator.php?key=test&location=%s&per_page=16";
+    private static final String GEOGRAPH_INFO_URL =
+        "https://api.geograph.org.uk/api/photo/%d?output=json&key=test";
+    private static final double PHOTO_REFRESH_DISTANCE_M = 5000; // re-fetch once moved this far
+    private static final Pattern GEOGRAPH_ID_PATTERN = Pattern.compile("geograph\\.org\\.uk/photo/(\\d+)");
+
+    private Bitmap  photoBitmap;
+    private double  photoFetchLat = Double.NaN;
+    private double  photoFetchLon = Double.NaN;
+    private volatile boolean photoFetchInFlight = false;
+    private final Random photoRandom = new Random();
 
     private final ConcurrentHashMap<String, Bitmap>  tileCache    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight     = new ConcurrentHashMap<>();
@@ -300,11 +321,20 @@ public class MapView extends View {
         mapType = type;
         overlayCache.clear();
         overlayFlight.clear();
-        prefetchTiles();
+        if ("Photo".equals(mapType)) {
+            if (hasLocation) maybeFetchGeographPhoto(gpsLat, gpsLon);
+        } else {
+            prefetchTiles();
+        }
         postInvalidate();
     }
 
     public void recentre() {
+        if ("Photo".equals(mapType)) {
+            // No map to recentre — fetch a different nearby photo instead
+            if (hasLocation) fetchGeographPhoto(gpsLat, gpsLon);
+            return;
+        }
         centerLat = gpsLat;
         centerLon = gpsLon;
         prefetchTiles();
@@ -322,7 +352,11 @@ public class MapView extends View {
             autoRecentreIfNearEdge();
         }
         this.hasLocation = true;
-        prefetchTiles();
+        if ("Photo".equals(mapType)) {
+            maybeFetchGeographPhoto(lat, lon);
+        } else {
+            prefetchTiles();
+        }
         postInvalidate();
     }
 
@@ -400,6 +434,7 @@ public class MapView extends View {
     // ── Tile fetching ─────────────────────────────────────────────────────────
 
     private void prefetchTiles() {
+        if ("Photo".equals(mapType)) return;
         int cx      = tileX(centerLon, zoom);
         int cy      = tileY(centerLat, zoom);
         int maxTile = (1 << zoom) - 1;
@@ -468,7 +503,109 @@ public class MapView extends View {
         });
     }
 
+    // ── Geograph photo fetching (Photo display type) ────────────────────────────
+
+    private void maybeFetchGeographPhoto(double lat, double lon) {
+        if (photoFetchInFlight) return;
+        if (photoBitmap != null
+                && haversineMetres(lat, lon, photoFetchLat, photoFetchLon) < PHOTO_REFRESH_DISTANCE_M)
+            return;
+        fetchGeographPhoto(lat, lon);
+    }
+
+    private void fetchGeographPhoto(final double lat, final double lon) {
+        if (photoFetchInFlight) return;
+        photoFetchInFlight = true;
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    String loc = String.format(Locale.US, "%.4f,%.4f", lat, lon);
+                    String feed = httpGetText(String.format(GEOGRAPH_SEARCH_URL, urlEncode(loc)));
+                    List<Integer> ids = new ArrayList<>();
+                    Matcher m = GEOGRAPH_ID_PATTERN.matcher(feed);
+                    while (m.find()) {
+                        int id = Integer.parseInt(m.group(1));
+                        if (!ids.contains(id)) ids.add(id);
+                    }
+                    if (ids.isEmpty()) return;
+                    int id = ids.get(photoRandom.nextInt(ids.size()));
+
+                    String infoJson = httpGetText(String.format(Locale.US, GEOGRAPH_INFO_URL, id));
+                    JSONObject info = new JSONObject(infoJson);
+                    String imgUrl = info.getString("imgserver") + info.getString("image");
+
+                    URL url = new URL(imgUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(15000);
+                    InputStream is = conn.getInputStream();
+                    Bitmap bmp = BitmapFactory.decodeStream(is);
+                    is.close();
+                    if (bmp != null) {
+                        photoBitmap   = bmp;
+                        photoFetchLat = lat;
+                        photoFetchLon = lon;
+                        postInvalidate();
+                    }
+                } catch (Exception ignored) {
+                    // Network hiccup or no nearby photos — keep showing the last photo, if any
+                } finally {
+                    photoFetchInFlight = false;
+                }
+            }
+        });
+    }
+
+    private static String urlEncode(String s) {
+        try {
+            return java.net.URLEncoder.encode(s, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            return s;
+        }
+    }
+
+    private String httpGetText(String urlStr) throws IOException {
+        URL url = new URL(urlStr);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(15000);
+        InputStream is = conn.getInputStream();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+        is.close();
+        return baos.toString("UTF-8");
+    }
+
     // ── Drawing ───────────────────────────────────────────────────────────────
+
+    private final Rect photoSrcRect = new Rect();
+
+    private void drawPhoto(Canvas canvas) {
+        int W = getWidth(), H = getHeight();
+        if (photoBitmap == null) {
+            canvas.drawColor(Color.parseColor("#D0D0D0"));
+            return;
+        }
+        // Centre-crop the photo to fill the view without distorting its aspect ratio
+        int bw = photoBitmap.getWidth(), bh = photoBitmap.getHeight();
+        float viewAspect  = (float) W / H;
+        float photoAspect = (float) bw / bh;
+        if (photoAspect > viewAspect) {
+            int cropW = Math.round(bh * viewAspect);
+            int left  = (bw - cropW) / 2;
+            photoSrcRect.set(left, 0, left + cropW, bh);
+        } else {
+            int cropH = Math.round(bw / viewAspect);
+            int top   = (bh - cropH) / 2;
+            photoSrcRect.set(0, top, bw, top + cropH);
+        }
+        tileRect.set(0, 0, W, H);
+        canvas.drawBitmap(photoBitmap, photoSrcRect, tileRect, tilePaint);
+    }
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -476,6 +613,11 @@ public class MapView extends View {
 
         if (!hasLocation) {
             canvas.drawColor(Color.parseColor("#D0D0D0"));
+            return;
+        }
+
+        if ("Photo".equals(mapType)) {
+            drawPhoto(canvas);
             return;
         }
 
