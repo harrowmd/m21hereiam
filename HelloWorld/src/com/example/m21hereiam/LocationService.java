@@ -1223,12 +1223,24 @@ public class LocationService extends Service implements LocationListener {
         } catch (Exception ignored) {}
         Integer sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
         Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+        boolean isFront = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
         int sensor = sensorOrientation != null ? sensorOrientation : 90;
-        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
-            int result = (sensor + deviceDegrees) % 360;
-            return (360 - result) % 360;
+        int result;
+        if (isFront) {
+            result = (sensor + deviceDegrees) % 360;
+            result = (360 - result) % 360;
+        } else {
+            result = (sensor - deviceDegrees + 360) % 360;
         }
-        return (sensor - deviceDegrees + 360) % 360;
+        // Confirmed by on-device testing: landscape (both cameras) and portrait back camera all
+        // come out correct with the formula above, but portrait front camera is 180° off. The
+        // mirror-correction math above is a known-inconsistent spot across OEMs/devices — rather
+        // than guess at a different general formula and risk breaking the three confirmed-good
+        // cases, flip only the specific case reported wrong.
+        if (isFront && (deviceDegrees == 0 || deviceDegrees == 180)) {
+            result = (result + 180) % 360;
+        }
+        return result;
     }
 
     private void setExifOrientation(File file, int degrees) {
