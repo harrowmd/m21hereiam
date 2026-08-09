@@ -49,10 +49,13 @@ import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import android.media.AudioManager;
+import android.media.ExifInterface;
 import android.media.MediaPlayer;
 import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.view.Surface;
+import android.view.WindowManager;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -970,9 +973,12 @@ public class LocationService extends Service implements LocationListener {
     private void takeAndUploadPhotos(CameraManager cm, String cameraId, final String facingName,
                                       int photoCount, int delayMs,
                                       final String sessionDir, final String auth) throws Exception {
+        CameraCharacteristics chars = cm.getCameraCharacteristics(cameraId);
+        final int jpegOrientation = computeJpegOrientation(chars);
+        writeLog("Alert photos: " + facingName + " JPEG orientation = " + jpegOrientation + "°");
+
         // Pick best JPEG size up to 2MP
-        StreamConfigurationMap map = cm.getCameraCharacteristics(cameraId)
-            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
         Size picSize = sizes[0];
         for (Size s : sizes) {
@@ -1053,6 +1059,7 @@ public class LocationService extends Service implements LocationListener {
                 camRef[0].createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             stillReq.addTarget(stillReader.getSurface());
             stillReq.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+            stillReq.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation);
 
             boolean useYuvFallback = false;
 
@@ -1161,6 +1168,9 @@ public class LocationService extends Service implements LocationListener {
                             if (jpegBytes.length > 0) {
                                 FileOutputStream fos = new FileOutputStream(outFile);
                                 fos.write(jpegBytes); fos.close();
+                                // YuvImage.compressToJpeg() writes no EXIF — set orientation
+                                // separately so the fallback path is corrected the same as JPEG capture
+                                setExifOrientation(outFile, jpegOrientation);
                                 writeLog("Alert photo: saved (YUV) " + fileName
                                     + " (" + jpegBytes.length + " bytes, " + imgW + "x" + imgH + ")");
                                 int code = putFile(outFile, sessionDir + enc(fileName), auth);
@@ -1192,6 +1202,49 @@ public class LocationService extends Service implements LocationListener {
             previewReader.close();
             stillReader.close();
             ht.quitSafely();
+        }
+    }
+
+    // Standard Camera2 formula (matches Google's Camera2Basic sample): combines the sensor's
+    // fixed mounting angle with the device's current physical rotation so the saved JPEG is
+    // right-side-up regardless of whether the phone was held in portrait or landscape when the
+    // alert fired. Front camera needs the extra mirror correction since its sensor coordinate
+    // system is flipped relative to the back camera.
+    private int computeJpegOrientation(CameraCharacteristics chars) {
+        int deviceDegrees = 0;
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            switch (wm.getDefaultDisplay().getRotation()) {
+                case Surface.ROTATION_0:   deviceDegrees = 0;   break;
+                case Surface.ROTATION_90:  deviceDegrees = 90;  break;
+                case Surface.ROTATION_180: deviceDegrees = 180; break;
+                case Surface.ROTATION_270: deviceDegrees = 270; break;
+            }
+        } catch (Exception ignored) {}
+        Integer sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+        int sensor = sensorOrientation != null ? sensorOrientation : 90;
+        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            int result = (sensor + deviceDegrees) % 360;
+            return (360 - result) % 360;
+        }
+        return (sensor - deviceDegrees + 360) % 360;
+    }
+
+    private void setExifOrientation(File file, int degrees) {
+        try {
+            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
+            int value;
+            switch (degrees) {
+                case 90:  value = ExifInterface.ORIENTATION_ROTATE_90;  break;
+                case 180: value = ExifInterface.ORIENTATION_ROTATE_180; break;
+                case 270: value = ExifInterface.ORIENTATION_ROTATE_270; break;
+                default:  value = ExifInterface.ORIENTATION_NORMAL;     break;
+            }
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(value));
+            exif.saveAttributes();
+        } catch (Exception e) {
+            writeLog("Alert photo: EXIF orientation set failed: " + e.getMessage());
         }
     }
 
