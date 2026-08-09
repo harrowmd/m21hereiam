@@ -181,11 +181,13 @@ public class LocationService extends Service implements LocationListener {
     long    lastFixTimeMs    = 0;    // time of last successful averaged-position calculation (UI display)
     long    lastRawFixTimeMs = 0;    // time of last raw GPS fix arrival (watchdog)
 
-    // Held for the life of the service and renewed by the watchdog every 60s. Without this,
-    // the OS can freeze the whole process during idle periods (screen off, no interaction) even
-    // with the battery-optimization exemption granted — Handler timers just stop firing for
-    // hours and everything (log ticks, watchdog, uploads) resumes in a burst once unfrozen.
-    private static final long WAKELOCK_RENEW_MS = 15 * 60 * 1000L;
+    // Held indefinitely for the life of the service. Without this, the OS can freeze the whole
+    // process during idle periods (screen off, no interaction) even with the battery-optimization
+    // exemption granted — Handler timers just stop firing for hours and everything (log ticks,
+    // watchdog, uploads, alert checks) resumes in a burst once unfrozen. Must NOT be given a
+    // timeout: an earlier version renewed it every 60s from the watchdog, but if a freeze hit in
+    // the window before the first renewal, the renewal itself couldn't run, the lock quietly
+    // expired, and the process stayed frozen for hours with nothing left to wake it.
     private PowerManager.WakeLock cpuWakeLock;
 
     // ── Alert state ───────────────────────────────────────────────────────────
@@ -217,7 +219,9 @@ public class LocationService extends Service implements LocationListener {
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
                 startLocationUpdates();
             }
-            if (cpuWakeLock != null) cpuWakeLock.acquire(WAKELOCK_RENEW_MS);
+            // Defensive: re-assert the wake lock in case it was ever released unexpectedly.
+            // acquire() with no args on an already-held, non-reference-counted lock is a no-op.
+            if (cpuWakeLock != null && !cpuWakeLock.isHeld()) cpuWakeLock.acquire();
             gpsHandler.postDelayed(this, 60_000L);
         }
     };
@@ -343,7 +347,7 @@ public class LocationService extends Service implements LocationListener {
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hereiamnow:tracking");
         cpuWakeLock.setReferenceCounted(false);
-        cpuWakeLock.acquire(WAKELOCK_RENEW_MS);
+        cpuWakeLock.acquire();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
