@@ -106,6 +106,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
             onLapAscentUpdate(service.lapAscentM);
             loadTrackPoints();
             mapView.setTrackColour(service.trackColour);
+            mapView.setService(service);
+            mapView.setPhotoRefreshIntervalHours(service.displayPeriodHours);
             mapView.setMapType(service.mapType);
             if ("Marine".equals(service.mapType)) {
                 tvAscent.setText(Double.isNaN(service.courseDeg) ? "Course: --"
@@ -207,6 +209,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final Button btnNearby = (Button) findViewById(R.id.btn_nearby);
         btnNearby.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
+                if (bound && "Photo".equals(service.mapType)) {
+                    // No map to search in Photo mode — show/hide the photo's description instead
+                    mapView.togglePhotoInfoOverlay();
+                    return;
+                }
                 if (!mapView.hasGpsLocation()) {
                     android.widget.Toast.makeText(MainActivity.this,
                         "No GPS fix yet", android.widget.Toast.LENGTH_SHORT).show();
@@ -762,6 +769,21 @@ public class MainActivity extends Activity implements LocationService.Listener {
             String.valueOf(service.alertPhotos));
         layout.addView(editAlertPhotos);
 
+        layout.addView(label("Alert volume"));
+        final String[] alertVolumes = {"Zero", "Low", "Medium", "High"};
+        final android.widget.Spinner spinnerAlertVolume = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<String> alertVolumeAdapter = new android.widget.ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, alertVolumes);
+        alertVolumeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerAlertVolume.setAdapter(alertVolumeAdapter);
+        for (int i = 0; i < alertVolumes.length; i++) {
+            if (alertVolumes[i].equals(service.alertVolume)) {
+                spinnerAlertVolume.setSelection(i);
+                break;
+            }
+        }
+        layout.addView(spinnerAlertVolume);
+
         layout.addView(label("Min satellites for map display"));
         final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.minSat));
@@ -873,6 +895,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     try { service.alertPhotos =
                         Math.max(0, Math.min(9, Integer.parseInt(editAlertPhotos.getText().toString().trim()))); }
                     catch (NumberFormatException ignored) {}
+                    service.alertVolume = alertVolumes[spinnerAlertVolume.getSelectedItemPosition()];
                     service.w3wBackoffTicks = 0; // allow immediate retry after settings saved
                     service.w3wFailCount    = 0;
                     service.startOnBoot  = checkBoot.isChecked();
@@ -882,6 +905,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     try { service.displayPeriodHours =
                         Math.max(1, Integer.parseInt(editDisplayPeriod.getText().toString().trim())); }
                     catch (NumberFormatException ignored) {}
+                    mapView.setPhotoRefreshIntervalHours(service.displayPeriodHours);
                     service.trackColour = trackColours[spinnerTrackColour.getSelectedItemPosition()];
                     mapView.setTrackColour(service.trackColour);
                     int mapTypeSel = spinnerMapType.getSelectedItemPosition();
@@ -907,6 +931,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putString (LocationService.PREF_TRACK_COLOUR,    service.trackColour)
                         .putInt    (LocationService.PREF_RETENTION_DAYS,  service.retentionDays)
                         .putString (LocationService.PREF_MAP_TYPE,         service.mapType)
+                        .putString (LocationService.PREF_ALERT_VOLUME,     service.alertVolume)
                         .apply();
                     service.applySettings();
                     loadTrackPoints(); // refresh map with new filters
@@ -930,7 +955,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
             + "<b>Buttons</b><br>"
             + "<b>NEAR ME</b> (green, top-left) — search for nearby points of interest on the map. "
-            + "Long-press to open Near Me Settings.<br>"
+            + "Long-press to open Near Me Settings. In Photo display mode there's no map to search, "
+            + "so this button instead shows/hides the current photo's description for 60 seconds.<br>"
             + "<b>&#9881;</b> (grey, top-right) — open Settings.<br>"
             + "<b>&#8982;</b> (blue, bottom-right) — re-centre map on your GPS position. "
             + "Long-press to toggle auto-centre on/off (button turns grey when off).<br><br>"
@@ -990,10 +1016,13 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "<b>Nextcloud / OwnCloud URL</b> — Base URL of your server, e.g. https://cloud.example.com<br>"
             + "<b>Username / Password</b> — Your Nextcloud login credentials.<br>"
             + "<b>Alert code</b> — Code used to trigger a remote alert (default: 911911).<br>"
+            + "<b>Alert volume</b> — Loudness of the alert siren. <i>Zero</i> mutes the sound but "
+            + "vibration, torch flash and photos still happen — useful for a silent alert.<br>"
             + "<b>Min satellites</b> — Minimum satellites required for a fix to appear on the map trail. "
             + "Set to 0 to show all fixes.<br>"
             + "<b>Display period</b> — Hours of track history shown on the map and used to calculate "
-            + "Dist, Speed, and Ascent. Default: 12 h.<br>"
+            + "Dist, Speed, and Ascent. Default: 12 h. In Photo display mode this instead sets how "
+            + "often a new nearby photo is fetched automatically.<br>"
             + "<b>Track colour</b> — Line drawn between GPS dots on the map. "
             + "Options: None (default), Blue, Red, Yellow, Black.<br>"
             + "<b>Display type</b> — <i>Land</i> shows OpenStreetMap tiles. "

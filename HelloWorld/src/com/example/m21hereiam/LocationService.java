@@ -94,6 +94,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_TRACK_COLOUR    = "track_colour";
     static final String PREF_RETENTION_DAYS  = "retention_days";
     static final String PREF_MAP_TYPE        = "map_type";
+    static final String PREF_ALERT_VOLUME    = "alert_volume";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -123,6 +124,7 @@ public class LocationService extends Service implements LocationListener {
     String  trackColour        = "None";
     int     retentionDays      = 31;
     String  mapType            = "Land";
+    String  alertVolume        = "High"; // Zero, Low, Medium, High
     volatile String w3wAddress = "";
     volatile int    w3wBackoffTicks = 0;
     volatile int    w3wFailCount    = 0;
@@ -433,8 +435,10 @@ public class LocationService extends Service implements LocationListener {
         trackColour        = p.getString (PREF_TRACK_COLOUR,    "None");
         retentionDays      = p.getInt    (PREF_RETENTION_DAYS,  31);
         mapType            = p.getString (PREF_MAP_TYPE,         "Land");
+        alertVolume        = p.getString (PREF_ALERT_VOLUME,     "High");
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
-            + "s session=" + session + " alert=" + alertCode + " boot=" + startOnBoot
+            + "s session=" + session + " alert=" + alertCode + " alertVolume=" + alertVolume
+            + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
             + " numGpsFixes=" + numGpsFixes + " map=" + mapType
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
@@ -730,14 +734,31 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
+    // "Zero" mutes the alarm stream but the alert still runs its full course (vibration,
+    // torch, photos) — useful for a silent-but-otherwise-normal alert.
+    private int alertVolumeTarget(AudioManager am) {
+        int maxVol = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+        double pct;
+        switch (alertVolume) {
+            case "Zero":   pct = 0.0;  break;
+            case "Low":    pct = 0.25; break;
+            case "Medium": pct = 0.6;  break;
+            case "High":
+            default:       pct = 1.0;  break;
+        }
+        return (int) Math.round(maxVol * pct);
+    }
+
     // Play loop extracted so volume is always restored
     private void playAlertAudio(File mp3) throws Exception {
         AudioManager am  = (AudioManager) getSystemService(AUDIO_SERVICE);
         Vibrator      vib = (Vibrator)     getSystemService(VIBRATOR_SERVICE);
-        int origVol = am.getStreamVolume(AudioManager.STREAM_ALARM);
-        int maxVol  = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
-        am.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0);
-        writeLog("Alert: alarm volume set to max (" + maxVol + "), was " + origVol);
+        int origVol   = am.getStreamVolume(AudioManager.STREAM_ALARM);
+        int maxVol    = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+        int targetVol = alertVolumeTarget(am);
+        am.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0);
+        writeLog("Alert: alarm volume set to " + targetVol + "/" + maxVol
+            + " (" + alertVolume + "), was " + origVol);
         // Vibration pattern: 400ms on, 200ms off, repeating (in sync with torch)
         long[] vibePattern = {0, 400, 200};
         try {

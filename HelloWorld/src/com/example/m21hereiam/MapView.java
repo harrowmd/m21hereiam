@@ -9,6 +9,9 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -84,6 +87,45 @@ public class MapView extends View {
     private double  photoFetchLon = Double.NaN;
     private volatile boolean photoFetchInFlight = false;
     private final Random photoRandom = new Random();
+
+    // Photo metadata, captured for the info overlay and the log file
+    private int    photoId      = -1;
+    private String photoTitle   = "";
+    private String photoComment = "";
+    private String photoAuthor  = "";
+    private String photoTaken   = "";
+
+    // "NEAR ME" repurposed in Photo mode: toggles a descriptive-text overlay for 60s
+    private boolean showPhotoInfo = false;
+    private static final long PHOTO_INFO_DURATION_MS = 60_000L;
+    private final android.os.Handler photoInfoHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable hidePhotoInfoRunnable = new Runnable() {
+        @Override public void run() {
+            showPhotoInfo = false;
+            if (service != null) service.writeLog("Geograph: info overlay auto-hidden after 60s");
+            postInvalidate();
+        }
+    };
+
+    // Periodic photo refresh — interval driven by the "Display period (hours)" setting
+    private long photoRefreshIntervalMs = 12 * 3600_000L;
+    private final android.os.Handler photoRefreshHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable photoRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if ("Photo".equals(mapType) && hasLocation) {
+                if (service != null) service.writeLog(String.format(Locale.US,
+                    "Geograph: periodic refresh fired (interval=%.1fh)", photoRefreshIntervalMs / 3600000.0));
+                fetchGeographPhoto(gpsLat, gpsLon);
+            }
+            photoRefreshHandler.postDelayed(this, photoRefreshIntervalMs);
+        }
+    };
+
+    // Set once the service is bound, so photo fetches can write to the shared log file
+    private LocationService service;
+    public void setService(LocationService s) { service = s; }
 
     private final ConcurrentHashMap<String, Bitmap>  tileCache    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlight     = new ConcurrentHashMap<>();
@@ -321,10 +363,37 @@ public class MapView extends View {
         mapType = type;
         overlayCache.clear();
         overlayFlight.clear();
+        photoInfoHandler.removeCallbacks(hidePhotoInfoRunnable);
+        showPhotoInfo = false;
+        photoRefreshHandler.removeCallbacks(photoRefreshRunnable);
         if ("Photo".equals(mapType)) {
             if (hasLocation) maybeFetchGeographPhoto(gpsLat, gpsLon);
+            photoRefreshHandler.postDelayed(photoRefreshRunnable, photoRefreshIntervalMs);
         } else {
             prefetchTiles();
+        }
+        postInvalidate();
+    }
+
+    /** Interval between automatic photo refreshes in Photo mode, from the "Display period" setting. */
+    public void setPhotoRefreshIntervalHours(int hours) {
+        photoRefreshIntervalMs = Math.max(1, hours) * 3600_000L;
+        if ("Photo".equals(mapType)) {
+            photoRefreshHandler.removeCallbacks(photoRefreshRunnable);
+            photoRefreshHandler.postDelayed(photoRefreshRunnable, photoRefreshIntervalMs);
+        }
+    }
+
+    /** NEAR ME repurposed in Photo mode: toggle the descriptive-text overlay (auto-hides after 60s). */
+    public void togglePhotoInfoOverlay() {
+        if (!"Photo".equals(mapType)) return;
+        showPhotoInfo = !showPhotoInfo;
+        photoInfoHandler.removeCallbacks(hidePhotoInfoRunnable);
+        if (showPhotoInfo) {
+            photoInfoHandler.postDelayed(hidePhotoInfoRunnable, PHOTO_INFO_DURATION_MS);
+            if (service != null) service.writeLog("Geograph: info overlay shown for photo #" + photoId);
+        } else {
+            if (service != null) service.writeLog("Geograph: info overlay hidden (button pressed again)");
         }
         postInvalidate();
     }
@@ -518,22 +587,52 @@ public class MapView extends View {
         photoFetchInFlight = true;
         executor.execute(new Runnable() {
             @Override public void run() {
+                String loc = String.format(Locale.US, "%.4f,%.4f", lat, lon);
+                long   t0  = System.currentTimeMillis();
                 try {
-                    String loc = String.format(Locale.US, "%.4f,%.4f", lat, lon);
-                    String feed = httpGetText(String.format(GEOGRAPH_SEARCH_URL, urlEncode(loc)));
+                    log("Geograph: searching near " + loc);
+                    String searchUrl = String.format(GEOGRAPH_SEARCH_URL, urlEncode(loc));
+                    String feed = httpGetText(searchUrl);
                     List<Integer> ids = new ArrayList<>();
                     Matcher m = GEOGRAPH_ID_PATTERN.matcher(feed);
                     while (m.find()) {
                         int id = Integer.parseInt(m.group(1));
                         if (!ids.contains(id)) ids.add(id);
                     }
-                    if (ids.isEmpty()) return;
+                    if (ids.isEmpty()) {
+                        log("Geograph: no photos found near " + loc + " (url=" + searchUrl
+                            + ") — keeping current photo");
+                        return;
+                    }
+                    log("Geograph: " + ids.size() + " candidate photo(s) found near " + loc
+                        + " — ids=" + ids);
                     int id = ids.get(photoRandom.nextInt(ids.size()));
 
-                    String infoJson = httpGetText(String.format(Locale.US, GEOGRAPH_INFO_URL, id));
+                    String infoUrl  = String.format(Locale.US, GEOGRAPH_INFO_URL, id);
+                    String infoJson = httpGetText(infoUrl);
                     JSONObject info = new JSONObject(infoJson);
-                    String imgUrl = info.getString("imgserver") + info.getString("image");
+                    String imgUrl   = info.getString("imgserver") + info.getString("image");
+                    String title    = info.optString("title", "");
+                    String comment  = info.optString("comment", "");
+                    String author   = info.optString("realname", "");
+                    String taken    = info.optString("taken", "");
+                    String gridRef  = info.optString("grid_reference", "");
+                    double photoLat = parseDoubleOrNaN(info.optString("wgs84_lat", ""));
+                    double photoLon = parseDoubleOrNaN(info.optString("wgs84_long", ""));
+                    String locDesc  = Double.isNaN(photoLat) ? "unknown"
+                        : String.format(Locale.US, "%.6f,%.6f (%.0fm from search point)",
+                            photoLat, photoLon, haversineMetres(lat, lon, photoLat, photoLon));
 
+                    log(String.format(Locale.US,
+                        "Geograph: selected photo #%d \"%s\" by %s, taken %s, grid ref %s, "
+                        + "located %s, comment length=%d chars, image url=%s",
+                        id, title.isEmpty() ? "(untitled)" : title,
+                        author.isEmpty() ? "unknown" : author,
+                        taken.isEmpty() ? "unknown" : taken,
+                        gridRef.isEmpty() ? "unknown" : gridRef,
+                        locDesc, comment.length(), imgUrl));
+
+                    long imgStart = System.currentTimeMillis();
                     URL url = new URL(imgUrl);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestProperty("User-Agent", "M21HereIAmApp/1.0");
@@ -546,15 +645,35 @@ public class MapView extends View {
                         photoBitmap   = bmp;
                         photoFetchLat = lat;
                         photoFetchLon = lon;
+                        photoId       = id;
+                        photoTitle    = title;
+                        photoComment  = comment;
+                        photoAuthor   = author;
+                        photoTaken    = taken;
+                        log(String.format(Locale.US,
+                            "Geograph: image downloaded %dx%d in %dms, total fetch %dms",
+                            bmp.getWidth(), bmp.getHeight(),
+                            System.currentTimeMillis() - imgStart, System.currentTimeMillis() - t0));
                         postInvalidate();
+                    } else {
+                        log("Geograph: image decode failed for " + imgUrl);
                     }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log("Geograph: fetch failed for search near " + loc + ": " + e);
                     // Network hiccup or no nearby photos — keep showing the last photo, if any
                 } finally {
                     photoFetchInFlight = false;
                 }
             }
         });
+    }
+
+    private void log(String message) {
+        if (service != null) service.writeLog(message);
+    }
+
+    private static double parseDoubleOrNaN(String s) {
+        try { return Double.parseDouble(s); } catch (Exception e) { return Double.NaN; }
     }
 
     private static String urlEncode(String s) {
@@ -605,6 +724,36 @@ public class MapView extends View {
         }
         tileRect.set(0, 0, W, H);
         canvas.drawBitmap(photoBitmap, photoSrcRect, tileRect, tilePaint);
+
+        if (showPhotoInfo) drawPhotoInfoOverlay(canvas, W, H);
+    }
+
+    private void drawPhotoInfoOverlay(Canvas canvas, int W, int H) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(photoTitle.isEmpty() ? "(untitled)" : photoTitle);
+        if (!photoAuthor.isEmpty()) sb.append("  — ").append(photoAuthor);
+        if (!photoTaken.isEmpty()) sb.append("  (").append(photoTaken).append(")");
+        if (!photoComment.isEmpty()) sb.append("\n\n").append(photoComment);
+        sb.append("\n\nsource: geograph.org.uk/photo/").append(photoId);
+
+        TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        tp.setColor(Color.WHITE);
+        tp.setTextSize(30f);
+        int pad = 24;
+        int textWidth = Math.max(1, W - pad * 2);
+        StaticLayout layout = new StaticLayout(sb.toString(), tp, textWidth,
+            Layout.Alignment.ALIGN_NORMAL, 1.15f, 0f, false);
+        int boxHeight = Math.min(layout.getHeight() + pad * 2, H * 3 / 4);
+
+        Paint bg = new Paint();
+        bg.setColor(0xCC000000);
+        canvas.drawRect(0, 0, W, boxHeight, bg);
+
+        canvas.save();
+        canvas.translate(pad, pad);
+        canvas.clipRect(0, 0, textWidth, boxHeight - pad * 2);
+        layout.draw(canvas);
+        canvas.restore();
     }
 
     @Override
