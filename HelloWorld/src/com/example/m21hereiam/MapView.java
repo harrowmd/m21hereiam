@@ -1,6 +1,7 @@
 package com.example.m21hereiam;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -9,6 +10,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.net.Uri;
 import android.os.Environment;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -104,6 +106,11 @@ public class MapView extends View {
     private String photoComment = "";
     private String photoAuthor  = "";
     private String photoTaken   = "";
+
+    // Screen-space bounding box of the "source: geograph.org.uk/photo/N" link drawn by
+    // drawPhotoInfoOverlay, used to hit-test taps in checkPhotoSourceTap. Only meaningful while
+    // showPhotoInfo is true.
+    private final RectF photoSourceLinkRect = new RectF();
 
     // "NEAR ME" repurposed in Photo mode: toggles a descriptive-text overlay for 60s
     private boolean showPhotoInfo = false;
@@ -279,8 +286,9 @@ public class MapView extends View {
                 isDragging = false;
                 float upX = event.getX();
                 float upY = event.getY();
-                if ((float) Math.hypot(upX - downX, upY - downY) < 20f && hasLocation)
-                    checkPoiTap(upX, upY);
+                if ((float) Math.hypot(upX - downX, upY - downY) < 20f && hasLocation) {
+                    if (!checkPhotoSourceTap(upX, upY)) checkPoiTap(upX, upY);
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 isDragging = false;
@@ -306,6 +314,22 @@ public class MapView extends View {
 
         prefetchTiles();
         invalidate();
+    }
+
+    // Opens the Geograph photo page in the default browser when the "source:" link drawn by
+    // drawPhotoInfoOverlay is tapped. Returns true if the tap was consumed (so callers can skip
+    // other tap handling), matching the pattern of tapping the what3words text in MainActivity.
+    private boolean checkPhotoSourceTap(float tapX, float tapY) {
+        if (!showPhotoInfo || photoId < 0 || !photoSourceLinkRect.contains(tapX, tapY)) return false;
+        String url = "https://www.geograph.org.uk/photo/" + photoId;
+        try {
+            getContext().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            log("Geograph: opened " + url + " in browser");
+        } catch (Exception e) {
+            log("Geograph: failed to open " + url + ": " + e.getMessage());
+        }
+        return true;
     }
 
     private void checkPoiTap(float tapX, float tapY) {
@@ -787,7 +811,7 @@ public class MapView extends View {
         if (!photoAuthor.isEmpty()) sb.append("  — ").append(photoAuthor);
         if (!photoTaken.isEmpty()) sb.append("  (").append(photoTaken).append(")");
         if (!photoComment.isEmpty()) sb.append("\n\n").append(photoComment);
-        sb.append("\n\nsource: geograph.org.uk/photo/").append(photoId);
+        String sourceText = "source: geograph.org.uk/photo/" + photoId;
 
         int topOffset = Math.round(PHOTO_INFO_TOP_MARGIN_DP * getResources().getDisplayMetrics().density);
 
@@ -798,7 +822,19 @@ public class MapView extends View {
         int textWidth = Math.max(1, W - pad * 2);
         StaticLayout layout = new StaticLayout(sb.toString(), tp, textWidth,
             Layout.Alignment.ALIGN_NORMAL, 1.15f, 0f, false);
-        int boxHeight = Math.min(layout.getHeight() + pad * 2, H - topOffset);
+
+        // Drawn as its own layout, tinted and underlined like the what3words link, so its
+        // on-screen bounds can be tracked separately for tap hit-testing (checkPhotoSourceTap).
+        int sourceGap = Math.round(12 * getResources().getDisplayMetrics().density);
+        TextPaint linkPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        linkPaint.setColor(0xFF64B5F6);
+        linkPaint.setTextSize(30f);
+        linkPaint.setUnderlineText(true);
+        StaticLayout sourceLayout = new StaticLayout(sourceText, linkPaint, textWidth,
+            Layout.Alignment.ALIGN_NORMAL, 1.15f, 0f, false);
+
+        int contentHeight = layout.getHeight() + sourceGap + sourceLayout.getHeight();
+        int boxHeight = Math.min(contentHeight + pad * 2, H - topOffset);
 
         Paint bg = new Paint();
         bg.setColor(0xCC000000);
@@ -808,7 +844,13 @@ public class MapView extends View {
         canvas.translate(pad, topOffset + pad);
         canvas.clipRect(0, 0, textWidth, boxHeight - pad * 2);
         layout.draw(canvas);
+        canvas.translate(0, layout.getHeight() + sourceGap);
+        sourceLayout.draw(canvas);
         canvas.restore();
+
+        float sourceTop = topOffset + pad + layout.getHeight() + sourceGap;
+        photoSourceLinkRect.set(pad, sourceTop,
+            pad + sourceLayout.getLineWidth(0), sourceTop + sourceLayout.getHeight());
     }
 
     @Override

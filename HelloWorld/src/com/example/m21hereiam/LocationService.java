@@ -1,6 +1,7 @@
 package com.example.m21hereiam;
 
 import android.Manifest;
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -23,6 +24,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
 
@@ -108,6 +110,10 @@ public class LocationService extends Service implements LocationListener {
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
     };
+    // Settings backup suffix — deliberately not in LOG_SUFFIXES: that array also drives the
+    // upload loop's local-file-existence check (today + suffix), and the local settings snapshot
+    // is never date-prefixed. Folded into cleanup separately instead — see deleteOldNextcloudFiles.
+    private static final String SETTINGS_UPLOAD_SUFFIX = "-settings-hia.json";
     private static final String GPX_CLOSE =
         "    </trkseg>\n  </trk>\n</gpx>\n";
     // KML in-memory track (reloaded from CSV on service restart)
@@ -141,6 +147,16 @@ public class LocationService extends Service implements LocationListener {
     volatile double depthM    = Double.NaN;
     private  long   lastDepthFetchTime = 0;
     private static final long MIN_DEPTH_INTERVAL_MS = 15 * 60 * 1000L;
+    // updateInterval can now go as low as 10s, but a W3W lookup is a network call that doesn't
+    // need to run nearly that often — gated independently so it never runs more than once/60s.
+    // Also skipped outright if the position hasn't moved since the last lookup, however much
+    // time has passed while stationary — same word address, no point re-querying the API and
+    // risking a rate-limit block for zero benefit.
+    private volatile long   lastW3wLookupTimeMs = 0;
+    private static final long MIN_W3W_INTERVAL_MS = 60_000L;
+    private volatile double lastW3wLat = Double.NaN;
+    private volatile double lastW3wLon = Double.NaN;
+    private static final double MIN_W3W_MOVE_KM = 0.005; // 5 m — roughly a what3words cell
 
     // Rolling buffer of recent GPS fixes for averaging: {lat, lon, alt, accuracy}
     private final java.util.List<double[]> fixBuffer = new java.util.ArrayList<>();
@@ -151,6 +167,13 @@ public class LocationService extends Service implements LocationListener {
     double csvAlt        = 0;
     float  csvAccuracy   = 0;
     int    csvSatellites = 0;
+    // When this stops being refreshed, csvSatellites is a stale last-known value, not a live
+    // reading — onSatelliteStatusChanged appears to stop firing during the same stalls that
+    // block onLocationChanged, so a long-unchanged satellite count during a fix drought does NOT
+    // mean satellites are still visible; it may just mean the callback itself has gone quiet.
+    // 2026-08-20: confirmed from the log — csvSatellites sat frozen at one value for 164
+    // consecutive ticks spanning multiple forced GPS restarts, which real tracking wouldn't do.
+    volatile long lastSatStatusUpdateMs = 0;
     int    csvBattery    = 0;
     double lapDistanceKm = 0;
     double lapAscentM    = 0;
@@ -192,6 +215,19 @@ public class LocationService extends Service implements LocationListener {
     long    lastFixTimeMs    = 0;    // time of last successful averaged-position calculation (UI display)
     long    lastRawFixTimeMs = 0;    // time of last raw GPS fix arrival (watchdog)
 
+    // Confirmed live on Android 15/RugKing: once backgrounded, the OS clamps location request
+    // intervals to ~10 minutes regardless of what's requested (location_background_throttle_
+    // interval_ms). Cycling at the foreground rate while backgrounded just burns CPU on work
+    // that gets thrown away, so the cycle interval (and the watchdog's staleness threshold)
+    // switch to this once the screen is off, and back to `updateInterval` when it's on.
+    private static final long BACKGROUND_INTERVAL_MS = 600_000L;
+    private volatile boolean screenOn = true;
+    private BroadcastReceiver screenReceiver;
+
+    private long effectiveInterval() {
+        return screenOn ? updateInterval : BACKGROUND_INTERVAL_MS;
+    }
+
     // Held indefinitely for the life of the service. Without this, the OS can freeze the whole
     // process during idle periods (screen off, no interaction) even with the battery-optimization
     // exemption granted — Handler timers just stop firing for hours and everything (log ticks,
@@ -200,6 +236,28 @@ public class LocationService extends Service implements LocationListener {
     // the window before the first renewal, the renewal itself couldn't run, the lock quietly
     // expired, and the process stayed frozen for hours with nothing left to wake it.
     private PowerManager.WakeLock cpuWakeLock;
+
+    // Diagnostics for the GPS watchdog's forced-teardown behaviour — added specifically so the
+    // 120s→240s threshold change (2026-08-20) can be verified from the log rather than just
+    // assumed: gpsWatchdogTeardownCount gives a running count of forced restarts since service
+    // start, and each new teardown reports whether the *previous* one was followed by any raw
+    // fix at all before this one fired. If teardowns keep reporting "no fix since previous
+    // teardown", that's evidence the restarts themselves are the problem (tearing down GPS
+    // before it can complete a fix); if fixes do land between teardowns, the threshold is doing
+    // its job and some other cause explains any remaining gaps.
+    private int  gpsWatchdogTeardownCount = 0;
+    private long lastTeardownTimeMs      = 0;
+
+    // "sat=N" for status/diagnostic log lines, flagged as stale when the underlying
+    // GnssStatus callback hasn't actually fired recently — see lastSatStatusUpdateMs.
+    private static final long SAT_STALE_MS = 15_000L;
+    private String satForLog() {
+        if (lastSatStatusUpdateMs == 0) return "sat=" + csvSatellites + " (never updated)";
+        long ageS = (System.currentTimeMillis() - lastSatStatusUpdateMs) / 1000;
+        return ageS * 1000 > SAT_STALE_MS
+            ? String.format(Locale.US, "sat=%d (STALE %ds)", csvSatellites, ageS)
+            : "sat=" + csvSatellites;
+    }
 
     // ── Alert state ───────────────────────────────────────────────────────────
     volatile boolean     alertActive    = false;
@@ -217,16 +275,28 @@ public class LocationService extends Service implements LocationListener {
         isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
     }
 
-    // GPS watchdog: fires every 60s; restarts GPS if no fix for 2× updateInterval (min 2 min)
+    // GPS watchdog: fires every 60s; restarts GPS if no fix for 2× the current cycle interval
+    // (min 4 min, raised from 2 min on 2026-08-20 — see gpsWatchdogTeardownCount comment above).
+    // Threshold scales with effectiveInterval() so a backgrounded, OS-throttled gap (expected,
+    // up to ~10 min) isn't mistaken for GPS having lost lock.
     private final Runnable gpsWatchdog = new Runnable() {
         @Override public void run() {
             long ageMs   = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
-            long threshMs = Math.max(updateInterval * 2, 120_000L);
+            long threshMs = Math.max(effectiveInterval() * 2, 240_000L);
             boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
             if (ageMs > threshMs) {
-                writeLog(String.format("GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s sat=%d — restarting GPS",
+                gpsWatchdogTeardownCount++;
+                String prevOutcome = lastTeardownTimeMs == 0 ? "n/a (first teardown this run)"
+                    : (lastRawFixTimeMs > lastTeardownTimeMs
+                        ? "fix DID land after it, before this one fired"
+                        : "NO fix landed after it before this one fired");
+                writeLog(String.format(
+                    "GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s %s — forcing GPS teardown #%d "
+                    + "since service start (previous teardown: %s)",
                     ageMs == Long.MAX_VALUE ? -1 : ageMs / 1000, threshMs / 1000,
-                    provEnabled ? "enabled" : "DISABLED", csvSatellites));
+                    provEnabled ? "enabled" : "DISABLED", satForLog(),
+                    gpsWatchdogTeardownCount, prevOutcome));
+                lastTeardownTimeMs = System.currentTimeMillis();
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
                 startLocationUpdates();
             }
@@ -243,11 +313,11 @@ public class LocationService extends Service implements LocationListener {
                 long rawAgeMs = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
                 long fixAgeS  = lastFixTimeMs > 0 ? (System.currentTimeMillis() - lastFixTimeMs) / 1000 : -1;
                 boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-                writeLog(String.format("Log tick: fixes-collected=%d sat=%d GPS-fix-age=%s provider=%s",
-                    fixBuffer.size(), csvSatellites,
+                writeLog(String.format("Log tick: fixes-collected=%d %s GPS-fix-age=%s provider=%s",
+                    fixBuffer.size(), satForLog(),
                     fixAgeS < 0 ? "--" : fixAgeS + "s",
                     provEnabled ? "ok" : "DISABLED"));
-                if (rawAgeMs > updateInterval * 2) {
+                if (rawAgeMs > effectiveInterval() * 2) {
                     writeLog(String.format("WARNING: last raw fix was %ds ago — GPS may have lost lock",
                         rawAgeMs == Long.MAX_VALUE ? -1 : rawAgeMs / 1000));
                 }
@@ -273,7 +343,25 @@ public class LocationService extends Service implements LocationListener {
                             writeLog("W3W: backing off (" + w3wBackoffTicks + " tick(s) remaining)");
                             w3w = "";
                         } else {
-                            w3w = lookupW3W(avg[0], avg[1]);
+                            long sinceLastLookup = System.currentTimeMillis() - lastW3wLookupTimeMs;
+                            double movedKm = Double.isNaN(lastW3wLat) ? Double.MAX_VALUE
+                                : haversine(lastW3wLat, lastW3wLon, avg[0], avg[1]);
+                            if (sinceLastLookup < MIN_W3W_INTERVAL_MS) {
+                                writeLog(String.format(Locale.US,
+                                    "W3W: skipped (%ds since last lookup, min %ds)",
+                                    sinceLastLookup / 1000, MIN_W3W_INTERVAL_MS / 1000));
+                                w3w = w3wAddress;
+                            } else if (movedKm < MIN_W3W_MOVE_KM) {
+                                writeLog(String.format(Locale.US,
+                                    "W3W: skipped (position unchanged, moved %.1fm since last lookup)",
+                                    movedKm * 1000));
+                                w3w = w3wAddress;
+                            } else {
+                                lastW3wLookupTimeMs = System.currentTimeMillis();
+                                lastW3wLat = avg[0];
+                                lastW3wLon = avg[1];
+                                w3w = lookupW3W(avg[0], avg[1]);
+                            }
                         }
                         w3wAddress = w3w;
                         if (!w3w.isEmpty() && uiListener != null) uiListener.onW3wUpdate(w3w);
@@ -317,10 +405,10 @@ public class LocationService extends Service implements LocationListener {
                 }).start();
             } else {
                 boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-                writeLog(String.format("Log tick: no GPS fix yet — provider=%s sat=%d",
-                    provEnabled ? "enabled" : "DISABLED", csvSatellites));
+                writeLog(String.format("Log tick: no GPS fix yet — provider=%s %s",
+                    provEnabled ? "enabled" : "DISABLED", satForLog()));
             }
-            logHandler.postDelayed(this, updateInterval);
+            logHandler.postDelayed(this, effectiveInterval());
         }
     };
 
@@ -356,6 +444,25 @@ public class LocationService extends Service implements LocationListener {
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
 
+        screenReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                boolean wasOn = screenOn;
+                screenOn = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
+                if (screenOn == wasOn) return;
+                writeLog("Screen " + (screenOn ? "on" : "off") + " — cycle interval now "
+                    + (effectiveInterval() / 1000) + "s");
+                if (screenOn) {
+                    // Fresh fix promptly now that the user is likely looking at the app
+                    logHandler.removeCallbacks(logTick);
+                    logHandler.post(logTick);
+                }
+            }
+        };
+        IntentFilter screenFilter = new IntentFilter();
+        screenFilter.addAction(Intent.ACTION_SCREEN_ON);
+        screenFilter.addAction(Intent.ACTION_SCREEN_OFF);
+        registerReceiver(screenReceiver, screenFilter);
+
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hereiamnow:tracking");
         cpuWakeLock.setReferenceCounted(false);
@@ -374,6 +481,7 @@ public class LocationService extends Service implements LocationListener {
                         if (status.usedInFix(i)) used++;
                     }
                     csvSatellites = used;
+                    lastSatStatusUpdateMs = System.currentTimeMillis();
                 }
             };
         }
@@ -381,17 +489,8 @@ public class LocationService extends Service implements LocationListener {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"),
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION |
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
-            } else {
-                startForeground(NOTIF_ID, buildNotification("Waiting for GPS\u2026"));
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "startForeground failed: " + e.getMessage());
-        }
+        reaffirmForeground();
+        scheduleKeepAlive();
         if (!timersStarted) {
             timersStarted = true;
             String buildInfo = "";
@@ -422,6 +521,7 @@ public class LocationService extends Service implements LocationListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
         try { unregisterReceiver(batteryReceiver); } catch (Exception ignored) {}
+        try { unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
         if (cpuWakeLock != null && cpuWakeLock.isHeld()) cpuWakeLock.release();
     }
 
@@ -429,8 +529,10 @@ public class LocationService extends Service implements LocationListener {
 
     void loadSettings() {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        updateInterval = p.getInt(PREF_INTERVAL,        60)  * 1000L;
-        uploadInterval = p.getInt(PREF_UPLOAD_INTERVAL, 300) * 1000L;
+        // Clamped here too (not just in the settings UI) since a stale or remotely-edited
+        // SharedPreferences value (see checkRemoteSettings) can bypass UI validation.
+        updateInterval = Math.max(10, Math.min(3600, p.getInt(PREF_INTERVAL, 60))) * 1000L;
+        uploadInterval = Math.max(60, Math.min(3600, p.getInt(PREF_UPLOAD_INTERVAL, 300))) * 1000L;
         nextcloudUrl   = p.getString(PREF_NC_URL,  "https://cloud.example.com");
         nextcloudUser  = p.getString(PREF_NC_USER, "");
         nextcloudPass  = p.getString(PREF_NC_PASS, "");
@@ -440,7 +542,7 @@ public class LocationService extends Service implements LocationListener {
         startOnBoot        = p.getBoolean(PREF_START_ON_BOOT, true);
         minSat             = p.getInt    (PREF_MIN_SAT,        4);
         displayPeriodHours = p.getInt    (PREF_DISPLAY_PERIOD, 12);
-        numGpsFixes        = p.getInt    (PREF_NUM_GPS_FIXES,  5);
+        numGpsFixes        = Math.max(1, Math.min(9, p.getInt(PREF_NUM_GPS_FIXES, 5)));
         w3wApiKey          = p.getString (PREF_W3W_KEY,         "");
         trackColour        = p.getString (PREF_TRACK_COLOUR,    "None");
         retentionDays      = p.getInt    (PREF_RETENTION_DAYS,  31);
@@ -462,7 +564,7 @@ public class LocationService extends Service implements LocationListener {
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
         logHandler.removeCallbacks(logTick);
-        logHandler.postDelayed(logTick, updateInterval);
+        logHandler.postDelayed(logTick, effectiveInterval());
         uploadHandler.removeCallbacks(uploadTick);
         uploadHandler.postDelayed(uploadTick, uploadInterval);
         uploadFiles();
@@ -486,26 +588,33 @@ public class LocationService extends Service implements LocationListener {
         }
         try {
             // Always request at 1s to keep GPS warm — duty cycling causes long TTFF on Android 15
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0, this);
+            //
+            // Both calls below explicitly bind callback delivery to the main Looper rather than
+            // using the implicit-Looper overloads. startLocationUpdates() isn't only ever called
+            // from the main thread — checkRemoteSettings() -> applySettings() runs on a plain
+            // background Thread with no Looper, and the implicit-Looper overloads throw
+            // "Can't create handler inside thread ... that has not called Looper.prepare()" when
+            // called from there. That exception used to abort mid-restart: removeUpdates() had
+            // already run, so GPS was left permanently deregistered (and the watchdog reschedule,
+            // later in this same method, never ran either) until the app was restarted.
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, 1000L, 0, this, Looper.getMainLooper());
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
                 try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
-                locationManager.registerGnssStatusCallback(gnssCallback);
-            }
-            // Network provider as fast fallback — sets hasLocation while GPS warms up
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 5000L, 0, this);
-                writeLog("Network provider also requested as fallback");
+                locationManager.registerGnssStatusCallback(gnssCallback, gpsHandler);
             }
             boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            writeLog("Requesting GPS updates every 1s (min " + numGpsFixes + " fixes/cycle required)"
+            writeLog("Requesting GPS updates every 1s (min " + numGpsFixes + " fixes/cycle, min "
+                + minSat + " satellites required)"
                 + " gps=" + (gpsEnabled ? "enabled" : "DISABLED"));
             // Start watchdog
             gpsHandler.removeCallbacks(gpsWatchdog);
             gpsHandler.postDelayed(gpsWatchdog, 60_000L);
-            // Seed with last known location if available
+            // Seed with last known GPS location if available. Network-provider fixes are
+            // deliberately not used anywhere (acquisition, fallback, or averaging) — they're
+            // coarse cell/Wi-Fi based and were previously found to be silently dragging down
+            // the position average when mixed in with real GPS fixes.
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (last == null)
-                last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
             if (last != null) {
                 long ageS = (System.currentTimeMillis() - last.getTime()) / 1000;
                 writeLog("Last known location: age=" + ageS + "s acc=" + last.getAccuracy()
@@ -526,8 +635,31 @@ public class LocationService extends Service implements LocationListener {
         csvAlt      = loc.getAltitude();
         csvAccuracy = loc.getAccuracy();
         lastRawFixTimeMs = System.currentTimeMillis();
-        // Accumulate all fixes during this update cycle
-        fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
+        // Only fixes meeting minSat count toward the averaged position — csvLat/csvLon/csvAlt
+        // above are still updated unconditionally so hasLocation/diagnostics reflect the latest
+        // raw fix, but a fix below minSat never enters the average. If a whole cycle produces no
+        // qualifying fixes, computeAveragedPosition() already falls back to the last raw values
+        // (i.e. the last good GPS position) when fixBuffer is empty.
+        //
+        // csvSatellites is fed by a separate callback (onSatelliteStatusChanged) that can stop
+        // updating during the same conditions that make fixes scarce — confirmed live 2026-08-20:
+        // a genuine background fix arrived with the satellite reading over 20 minutes stale. Using
+        // that stale count to reject an otherwise-real fix would be worse than not gating at all,
+        // so a stale reading is treated as "unknown" and never blocks a fix — only a *fresh*
+        // reading below minSat does.
+        boolean satFresh = lastSatStatusUpdateMs > 0
+            && (System.currentTimeMillis() - lastSatStatusUpdateMs) <= SAT_STALE_MS;
+        if (!satFresh || csvSatellites >= minSat) {
+            fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
+            if (!satFresh) {
+                writeLog(String.format(Locale.US,
+                    "GPS fix accepted despite stale satellite reading (sat=%d, minSat check skipped)",
+                    csvSatellites));
+            }
+        } else {
+            writeLog(String.format(Locale.US,
+                "GPS fix rejected: sat=%d < minSat=%d — not added to average", csvSatellites, minSat));
+        }
         if (!hasLocation) {
             hasLocation = true;
             writeLog(String.format(Locale.US,
@@ -577,8 +709,61 @@ public class LocationService extends Service implements LocationListener {
     }
 
     private void updateNotification(String text) {
+        lastNotifText = text;
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
             .notify(NOTIF_ID, buildNotification(text));
+    }
+
+    // Android silently drops foreground-service status (isForeground -> false, service type bits
+    // cleared) a few minutes into screen-off/idle, even for apps exempted from battery
+    // optimizations — confirmed via `dumpsys activity services` on Android 15/RugKing, no
+    // exception thrown, nothing logged. Re-issuing startForeground() restores isForeground=true
+    // and the type bits immediately, so the watchdog calls this every 60s (well inside the
+    // observed ~5 minute revocation window) to keep re-asserting it before it lapses.
+    private volatile String lastNotifText = "Waiting for GPS…";
+
+    private void reaffirmForeground() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, buildNotification(lastNotifText),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION |
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+            } else {
+                startForeground(NOTIF_ID, buildNotification(lastNotifText));
+            }
+        } catch (Exception e) {
+            writeLog("reaffirmForeground: startForeground failed: " + e.getMessage());
+        }
+    }
+
+    // A plain in-process Handler tick calling startForeground() again does NOT work once
+    // Android has already dropped foreground status (confirmed live: startForegroundCount never
+    // increased, no exception thrown, isForeground stayed false) — self-triggered calls from a
+    // background process don't satisfy Android 15's background-FGS-start limitation. An exact,
+    // allow-while-idle alarm does: the OS itself wakes the app to deliver it, which is a calling
+    // context startForegroundService() is allowed from. Re-armed every time onStartCommand runs
+    // (initial start, and every keep-alive firing via KeepAliveReceiver), so the chain keeps
+    // itself going — and survives the whole process being killed, since the pending alarm
+    // outlives the process and will relaunch the service when it fires.
+    private static final long KEEPALIVE_INTERVAL_MS = 3 * 60 * 1000L;
+
+    private void scheduleKeepAlive() {
+        try {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            Intent intent = new Intent(this, KeepAliveReceiver.class);
+            int piFlags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                : PendingIntent.FLAG_UPDATE_CURRENT;
+            PendingIntent pi = PendingIntent.getBroadcast(this, 0, intent, piFlags);
+            long triggerAt = android.os.SystemClock.elapsedRealtime() + KEEPALIVE_INTERVAL_MS;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+            } else {
+                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+            }
+        } catch (Exception e) {
+            writeLog("scheduleKeepAlive failed: " + e.getMessage());
+        }
     }
 
     // ── Settings backup / remote sync ────────────────────────────────────────
@@ -595,6 +780,14 @@ public class LocationService extends Service implements LocationListener {
 
     private static final String SETTINGS_FILENAME     = "settings-hia.json";
     private static final String SETTINGS_BAK_FILENAME = "settings-hia.bak";
+    // The remote copy the phone PUTs every cycle deliberately goes to a different, date-prefixed
+    // filename (YYYY-MM-DD-settings-hia.json — see SETTINGS_UPLOAD_SUFFIX) rather than the fixed
+    // name it GETs for remote-control purposes. PUTting and GETting the same fixed remote path
+    // back to back, every upload cycle, forever, turned out to cause persistent HTTP 423 Locked
+    // responses on this Nextcloud instance. A fresh filename per day means the phone's own upload
+    // never collides with its own read-back and never repeatedly hits the same long-lived
+    // resource, and SETTINGS_FILENAME on the server becomes purely something a human edits by
+    // hand to push settings to the phone — the phone itself never writes to that path.
     private static final Set<String> REMOTE_SETTINGS_EXCLUDED = new HashSet<>(
         Arrays.asList(PREF_NC_URL, PREF_NC_USER, PREF_NC_PASS));
 
@@ -608,17 +801,20 @@ public class LocationService extends Service implements LocationListener {
     }
 
     // Applies every key in json to the editor (except those in exclude) whose value differs
-    // from what's currently in `current`. Returns the list of keys actually changed.
+    // from what's in `compareAgainst`. Returns the list of keys actually changed.
+    //
+    // compareAgainst is deliberately a frozen JSONObject rather than "whatever SharedPreferences
+    // says right now" — see checkRemoteSettings for why: comparing against live, possibly-since-
+    // edited prefs is what caused a fresh local Save to get silently reverted moments later.
     private List<String> applyJsonToPrefs(JSONObject json, SharedPreferences.Editor editor,
-                                           Set<String> exclude, SharedPreferences current) {
+                                           Set<String> exclude, JSONObject compareAgainst) {
         List<String> changed = new ArrayList<>();
-        java.util.Map<String, ?> existingAll = current.getAll();
         Iterator<String> keys = json.keys();
         while (keys.hasNext()) {
             String key = keys.next();
             if (exclude != null && exclude.contains(key)) continue;
             Object value = json.opt(key);
-            if (value == null || settingsValuesEqual(value, existingAll.get(key))) continue;
+            if (value == null || settingsValuesEqual(value, compareAgainst.opt(key))) continue;
             if (value instanceof Boolean)      editor.putBoolean(key, (Boolean) value);
             else if (value instanceof Number)  editor.putInt(key, ((Number) value).intValue());
             else if (value instanceof String)  editor.putString(key, (String) value);
@@ -631,7 +827,10 @@ public class LocationService extends Service implements LocationListener {
     // Snapshot all current settings to Documents/settings-hia.json, keeping the previous
     // version as settings-hia.bak. Atomic: written to a temp file then renamed into place, so a
     // write interrupted mid-way never leaves a half-written settings-hia.json behind.
-    void writeSettingsSnapshot() {
+    // Returns the JSONObject actually written (or null on failure) — callers that go on to
+    // compare a later-fetched remote copy against "what we just told the server" should hold
+    // onto this rather than re-reading live SharedPreferences, which may have moved on by then.
+    JSONObject writeSettingsSnapshot() {
         try {
             SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
             JSONObject json = new JSONObject(p.getAll());
@@ -649,8 +848,10 @@ public class LocationService extends Service implements LocationListener {
                 target.renameTo(bak);
             }
             tmp.renameTo(target);
+            return json;
         } catch (Exception e) {
             writeLog("Settings snapshot failed: " + e.getMessage());
+            return null;
         }
     }
 
@@ -668,7 +869,7 @@ public class LocationService extends Service implements LocationListener {
             try {
                 JSONObject json = new JSONObject(readFile(f));
                 SharedPreferences.Editor editor = p.edit();
-                List<String> restored = applyJsonToPrefs(json, editor, null, p);
+                List<String> restored = applyJsonToPrefs(json, editor, null, new JSONObject());
                 editor.apply();
                 writeLog("Settings restored from " + name + " (" + restored.size()
                     + " key(s), SharedPreferences was empty)");
@@ -679,9 +880,34 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
+    // Internal bookkeeping only (not a user-facing setting, never included in the uploaded
+    // snapshot) — the ETag of settings-hia.json the last time its content was actually applied.
+    private static final String PREF_REMOTE_SETTINGS_ETAG = "_remote_settings_etag";
+
     // Fetch Nextcloud's copy of settings-hia.json and apply any changes (except the excluded
     // connection fields) — this is how settings get changed remotely, no restart involved.
-    private void checkRemoteSettings(String sessionDir, String auth) {
+    //
+    // uploadedSnapshot is what writeSettingsSnapshot() captured and PUT earlier in this same
+    // upload cycle. A GET here can easily land seconds after that PUT (after two MKCOLs and
+    // several file uploads), which is plenty of time for the user to hit Save on a local edit in
+    // between. Comparing the fetched copy against uploadedSnapshot — what we actually told the
+    // server — rather than live SharedPreferences means only a genuine external edit (the remote
+    // copy differing from what we ourselves last wrote) gets applied; a fresh local edit that
+    // landed mid-cycle was never part of uploadedSnapshot, so it's left alone.
+    //
+    // That alone isn't enough, though: since the phone stopped writing to this file (see
+    // SETTINGS_UPLOAD_SUFFIX), its content never converges back to match local reality — it's
+    // frozen at whatever it last contained. Comparing by value alone meant *any* local edit that
+    // happened to differ from that frozen snapshot got treated as "an external change to apply"
+    // and reverted, forever, on every single upload cycle — not just once. The ETag check below
+    // fixes that: the remote copy's content is only ever applied when its ETag has changed since
+    // the last time we looked, i.e. a human actually edited it on Nextcloud. An unchanged file is
+    // left alone no matter how far it's since drifted from local settings via the user's own edits.
+    private void checkRemoteSettings(String sessionDir, String auth, JSONObject uploadedSnapshot) {
+        if (uploadedSnapshot == null) {
+            writeLog("Remote settings check skipped: no local snapshot to compare against");
+            return;
+        }
         try {
             String url = sessionDir + enc(SETTINGS_FILENAME);
             HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -695,6 +921,8 @@ public class LocationService extends Service implements LocationListener {
                 c.disconnect();
                 return;
             }
+            String remoteEtag = c.getHeaderField("ETag");
+            if (remoteEtag == null) remoteEtag = c.getHeaderField("Last-Modified");
             InputStream is = c.getInputStream();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -702,9 +930,18 @@ public class LocationService extends Service implements LocationListener {
             while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
             is.close();
             c.disconnect();
-            JSONObject remote = new JSONObject(baos.toString("UTF-8"));
 
             SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            if (remoteEtag != null && remoteEtag.equals(p.getString(PREF_REMOTE_SETTINGS_ETAG, null))) {
+                writeLog("Remote settings check: unchanged since last check (etag match) — not re-applying");
+                return;
+            }
+            // Record this version as seen regardless of what the diff below finds, so an
+            // unchanged-content-but-different-etag edit (or one that only touches excluded
+            // connection fields) doesn't get re-inspected every cycle either.
+            if (remoteEtag != null) p.edit().putString(PREF_REMOTE_SETTINGS_ETAG, remoteEtag).apply();
+            JSONObject remote = new JSONObject(baos.toString("UTF-8"));
+
             List<String> ignored = new ArrayList<>();
             for (String key : REMOTE_SETTINGS_EXCLUDED) {
                 if (remote.has(key) && !settingsValuesEqual(remote.opt(key), p.getAll().get(key)))
@@ -715,7 +952,7 @@ public class LocationService extends Service implements LocationListener {
                     + " — connection fields are never applied remotely");
 
             SharedPreferences.Editor editor = p.edit();
-            List<String> changed = applyJsonToPrefs(remote, editor, REMOTE_SETTINGS_EXCLUDED, p);
+            List<String> changed = applyJsonToPrefs(remote, editor, REMOTE_SETTINGS_EXCLUDED, uploadedSnapshot);
             if (changed.isEmpty()) {
                 writeLog("Remote settings check: no changes");
                 return;
@@ -752,7 +989,9 @@ public class LocationService extends Service implements LocationListener {
         final File   dir   = docsDir();
         final String today = dateFmt.format(new Date());
 
-        writeSettingsSnapshot(); // keep settings-hia.json current before it's uploaded below
+        // Keep settings-hia.json current before it's uploaded below. The returned snapshot is
+        // what checkRemoteSettings() compares the later GET against — see its comment.
+        final JSONObject settingsSnapshot = writeSettingsSnapshot();
         writeLog("Upload starting: url=" + url + " user=" + user + " session=" + sess);
         new Thread(new Runnable() {
             @Override public void run() {
@@ -783,15 +1022,29 @@ public class LocationService extends Service implements LocationListener {
                         }
                     }
                     File settingsFile = new File(dir, SETTINGS_FILENAME);
+                    boolean settingsPutOk = false;
                     if (settingsFile.exists()) {
-                        int code = putFile(settingsFile, sessionDir + enc(SETTINGS_FILENAME), auth);
-                        writeLog("PUT " + SETTINGS_FILENAME + " (" + settingsFile.length()
+                        // Uploaded under a fresh date-prefixed name each day, not SETTINGS_FILENAME
+                        // \u2014 see SETTINGS_UPLOAD_SUFFIX's declaration for why.
+                        String uploadName = today + SETTINGS_UPLOAD_SUFFIX;
+                        int code = putFile(settingsFile, sessionDir + enc(uploadName), auth);
+                        writeLog("PUT " + uploadName + " (" + settingsFile.length()
                             + " bytes) \u2192 HTTP " + code);
+                        settingsPutOk = code < 400;
                     }
                     writeLog("Upload done: " + uploaded + " file(s) \u2192 " + sess);
                     if (!alert.isEmpty())
                         checkForAlert(alert, sessionDir, auth, dir);
-                    checkRemoteSettings(sessionDir, auth);
+                    // checkRemoteSettings() compares the server's copy against settingsSnapshot on
+                    // the assumption the server now actually holds settingsSnapshot (just PUT
+                    // above). If that PUT failed \u2014 e.g. HTTP 423 Locked \u2014 the server still holds
+                    // whatever was there before, so the comparison would see a spurious "external"
+                    // change and revert live prefs back to that stale value. Skip it in that case.
+                    if (settingsPutOk) {
+                        checkRemoteSettings(sessionDir, auth, settingsSnapshot);
+                    } else {
+                        writeLog("Remote settings check skipped: settings-hia.json upload did not succeed");
+                    }
                     deleteOldNextcloudFiles(sessionDir, auth);
                 } catch (Exception e) {
                     writeLog("Upload failed: " + e.getMessage());
@@ -2022,6 +2275,23 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
+    // Returns true if the file existed and was deleted.
+    private boolean deleteNextcloudFile(String sessionDir, String fileName, String auth) {
+        try {
+            HttpURLConnection c = (HttpURLConnection)
+                new URL(sessionDir + enc(fileName)).openConnection();
+            c.setRequestMethod("DELETE");
+            c.setRequestProperty("Authorization", auth);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(15000);
+            int code = c.getResponseCode();
+            c.disconnect();
+            return code >= 200 && code < 300;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private void deleteOldNextcloudFiles(String sessionDir, String auth) {
         long now   = System.currentTimeMillis();
         long dayMs = 24L * 60 * 60 * 1000;
@@ -2031,20 +2301,16 @@ public class LocationService extends Service implements LocationListener {
             String dateStr = dateFmt.format(new Date(now - age * dayMs));
             for (String suffix : LOG_SUFFIXES) {
                 String fileName = dateStr + suffix;
-                try {
-                    HttpURLConnection c = (HttpURLConnection)
-                        new URL(sessionDir + enc(fileName)).openConnection();
-                    c.setRequestMethod("DELETE");
-                    c.setRequestProperty("Authorization", auth);
-                    c.setConnectTimeout(15000);
-                    c.setReadTimeout(15000);
-                    int code = c.getResponseCode();
-                    c.disconnect();
-                    if (code >= 200 && code < 300) {
-                        writeLog("NC delete: " + fileName);
-                        deleted++;
-                    }
-                } catch (Exception ignored) {}
+                if (deleteNextcloudFile(sessionDir, fileName, auth)) {
+                    writeLog("NC delete: " + fileName);
+                    deleted++;
+                }
+            }
+            // Daily settings backups (see SETTINGS_UPLOAD_SUFFIX) follow the same retention window.
+            String settingsBackupName = dateStr + SETTINGS_UPLOAD_SUFFIX;
+            if (deleteNextcloudFile(sessionDir, settingsBackupName, auth)) {
+                writeLog("NC delete: " + settingsBackupName);
+                deleted++;
             }
         }
         if (deleted > 0) writeLog("NC deleted " + deleted + " old file(s)");

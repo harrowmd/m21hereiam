@@ -137,8 +137,8 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 long ageMs = service.lastFixTimeMs > 0
                     ? System.currentTimeMillis() - service.lastFixTimeMs : -1;
                 tvFixAge.setText(ageMs < 0
-                    ? "GPS fix age: --"
-                    : String.format("GPS fix age: %ds", ageMs / 1000));
+                    ? "GPS age: --"
+                    : String.format("GPS age: %ds", ageMs / 1000));
             }
             clockHandler.postDelayed(this, 1000);
         }
@@ -240,6 +240,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
 
         requestNeededPermissions();
         requestIgnoreBatteryOptimizationsIfNeeded();
+        requestExactAlarmPermissionIfNeeded();
     }
 
     @Override
@@ -711,32 +712,32 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editSession = editText(InputType.TYPE_CLASS_TEXT, service.session);
         layout.addView(editSession);
 
-        layout.addView(label("Update interval (seconds)"));
+        layout.addView(label("GPS update interval (10 - 3600 secs)"));
         final EditText editInterval = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.updateInterval / 1000));
         layout.addView(editInterval);
 
-        layout.addView(label("Num GPS fixes (averaged per log entry)"));
+        layout.addView(label("GPS recent smoothing (1 - 9 fixes)"));
         final EditText editNumFixes = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.numGpsFixes));
         layout.addView(editNumFixes);
 
-        layout.addView(label("Upload interval (seconds)"));
+        layout.addView(label("Nextcloud sync interval (60 - 3600 secs)"));
         final EditText editUpload = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.uploadInterval / 1000));
         layout.addView(editUpload);
 
-        layout.addView(label("Nextcloud / OwnCloud URL"));
+        layout.addView(label("Nextcloud URL"));
         final EditText editUrl = editText(
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
             service.nextcloudUrl);
         layout.addView(editUrl);
 
-        layout.addView(label("Username"));
+        layout.addView(label("Nextcloud Username"));
         final EditText editUser = editText(InputType.TYPE_CLASS_TEXT, service.nextcloudUser);
         layout.addView(editUser);
 
-        layout.addView(label("Password"));
+        layout.addView(label("Nextcloud Password (or APP password)"));
         final EditText editPass = editText(
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD,
             service.nextcloudPass);
@@ -765,7 +766,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         layout.addView(passRow);
 
-        layout.addView(label("Alert code"));
+        layout.addView(label("Alert code (e.g. 911 for filename: 911.mp3)"));
         final EditText editAlertCode = editText(InputType.TYPE_CLASS_TEXT, service.alertCode);
         layout.addView(editAlertCode);
 
@@ -789,12 +790,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
         }
         layout.addView(spinnerAlertVolume);
 
-        layout.addView(label("Min satellites for map display"));
+        layout.addView(label("Minimum satellites for a GPS fix"));
         final EditText editMinSat = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.minSat));
         layout.addView(editMinSat);
 
-        layout.addView(label("Display period (hours)"));
+        layout.addView(label("Map/track display period (hours)"));
         final EditText editDisplayPeriod = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.displayPeriodHours));
         layout.addView(editDisplayPeriod);
@@ -877,22 +878,44 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     if (!bound) return;
                     service.session = editSession.getText().toString().trim();
                     if (service.session.isEmpty()) service.session = "mobyphone";
-                    try { service.updateInterval =
-                        Math.max(10, Integer.parseInt(editInterval.getText().toString().trim())) * 1000L; }
-                    catch (NumberFormatException ignored) {}
-                    try { service.numGpsFixes =
-                        Math.max(1, Integer.parseInt(editNumFixes.getText().toString().trim())); }
-                    catch (NumberFormatException ignored) {}
-                    try { service.uploadInterval =
-                        Math.max(10, Integer.parseInt(editUpload.getText().toString().trim())) * 1000L; }
-                    catch (NumberFormatException ignored) {}
-                    if (service.uploadInterval < service.updateInterval) {
-                        service.uploadInterval = service.updateInterval;
-                        android.widget.Toast.makeText(MainActivity.this,
-                            "Upload interval must be \u2265 update interval — set to "
-                                + (service.uploadInterval / 1000) + "s",
-                            android.widget.Toast.LENGTH_LONG).show();
-                    }
+                    try {
+                        int parsedInterval = Integer.parseInt(editInterval.getText().toString().trim());
+                        int clampedInterval = Math.max(10, Math.min(3600, parsedInterval));
+                        if (clampedInterval != parsedInterval) {
+                            android.widget.Toast.makeText(MainActivity.this,
+                                "Update interval must be 10–3600s — set to " + clampedInterval + "s",
+                                android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        service.updateInterval = clampedInterval * 1000L;
+                    } catch (NumberFormatException ignored) {}
+                    try {
+                        int parsedFixes = Integer.parseInt(editNumFixes.getText().toString().trim());
+                        int clampedFixes = Math.max(1, Math.min(9, parsedFixes));
+                        if (clampedFixes != parsedFixes) {
+                            android.widget.Toast.makeText(MainActivity.this,
+                                "GPS recent smoothing must be 1–9 fixes — set to " + clampedFixes,
+                                android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        service.numGpsFixes = clampedFixes;
+                    } catch (NumberFormatException ignored) {}
+                    // Deliberately independent of updateInterval: uploadFiles() also runs
+                    // checkForAlert() every cycle, so a shorter upload interval than update
+                    // interval is a legitimate way to check for an alert more often than GPS
+                    // fixes are logged (e.g. update=600s to save battery, upload=60s for a
+                    // faster alert response). Uploads in between new fixes just re-PUT unchanged
+                    // log files — harmless, not worth blocking the alert-cadence use case over.
+                    // Still has its own floor, same as update interval, so it can't be set low
+                    // enough to hammer Nextcloud/battery regardless of update interval.
+                    try {
+                        int parsedUpload = Integer.parseInt(editUpload.getText().toString().trim());
+                        int clampedUpload = Math.max(60, Math.min(3600, parsedUpload));
+                        if (clampedUpload != parsedUpload) {
+                            android.widget.Toast.makeText(MainActivity.this,
+                                "Upload interval must be 60–3600s — set to " + clampedUpload + "s",
+                                android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        service.uploadInterval = clampedUpload * 1000L;
+                    } catch (NumberFormatException ignored) {}
                     service.nextcloudUrl  = editUrl.getText().toString().trim();
                     service.nextcloudUser = editUser.getText().toString().trim();
                     service.nextcloudPass = editPass.getText().toString();
@@ -957,7 +980,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             "<b>Here I Am Now</b><br>"
             + "Android GPS tracking app. Records your location continuously in the background, "
             + "saves it to log files on the phone, and uploads them automatically to a "
-            + "Nextcloud or OwnCloud server. No Google Play Services required.<br><br>"
+            + "Nextcloud server. No Google Play Services required.<br><br>"
 
             + "<b>Buttons</b><br>"
             + "<b>NEAR ME</b> (green, top-left) — search for nearby points of interest on the map. "
@@ -968,7 +991,12 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "Long-press to toggle auto-centre on/off (button turns grey when off).<br><br>"
 
             + "<b>How it works</b><br>"
-            + "A background service records a GPS fix every <i>Update interval</i> seconds. "
+            + "A background service records a GPS fix every <i>Update interval</i> seconds while "
+            + "the screen is on. Once the screen turns off, Android itself throttles background "
+            + "location updates, so the app switches to a slower, fixed 10-minute cycle to match — "
+            + "checking for an alert file still happens at the separate <i>Upload interval</i> the "
+            + "whole time. Turning the screen back on immediately triggers a fresh fix and returns "
+            + "to the normal <i>Update interval</i> cadence.<br>"
             + "Each fix is averaged from multiple samples (see <i>Num GPS fixes</i>) to improve accuracy. "
             + "Fixes are written to four daily log files in the phone&#39;s Documents folder. "
             + "Files are uploaded to your Nextcloud server every <i>Upload interval</i> seconds. "
@@ -1017,18 +1045,25 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "<b>Settings</b><br>"
             + "<b>Session name</b> — Nextcloud subfolder for this device&#39;s files. "
             + "Use a different name per device (e.g. phone1, car).<br>"
-            + "<b>Update interval</b> — How often a GPS fix is recorded. Default: 60 s.<br>"
-            + "<b>Num GPS fixes</b> — Samples averaged per log entry to improve accuracy. Default: 5.<br>"
-            + "<b>Upload interval</b> — How often files are sent to Nextcloud. Default: 300 s.<br>"
-            + "<b>Nextcloud / OwnCloud URL</b> — Base URL of your server, e.g. https://cloud.example.com<br>"
-            + "<b>Username / Password</b> — Your Nextcloud login credentials.<br>"
-            + "<b>Alert code</b> — Code used to trigger a remote alert (default: 911911).<br>"
+            + "<b>Update interval</b> — How often a GPS fix is recorded. Default: 60 s (10–3600 s).<br>"
+            + "<b>Num GPS fixes</b> — Samples averaged per log entry to improve accuracy. "
+            + "Default: 5 (1–9 fixes).<br>"
+            + "<b>Upload interval</b> — How often files are sent to Nextcloud, and how often an "
+            + "alert file is checked for — independent of update interval. Default: 300 s (60–3600 s).<br>"
+            + "<b>Nextcloud URL</b> — Base URL of your server, e.g. https://cloud.example.com<br>"
+            + "<b>Username / Password</b> — Your Nextcloud login credentials, or an app password "
+            + "generated in Nextcloud&#39;s security settings (recommended, since it can be revoked "
+            + "independently of your main account password).<br>"
+            + "<b>Alert code</b> — Code used to trigger a remote alert, e.g. 911 for a trigger file "
+            + "named 911.mp3 (default: 911911).<br>"
             + "<b>Alert volume</b> — Loudness of the alert siren. <i>Zero</i> runs the alert fully "
             + "incognito: no sound, no vibration, no torch flash, and no Cancel Alert button on "
             + "screen — nothing observable shows an alert is active. Photos are still taken and "
             + "uploaded as normal.<br>"
-            + "<b>Min satellites</b> — Minimum satellites required for a fix to appear on the map trail. "
-            + "Set to 0 to show all fixes.<br>"
+            + "<b>Min satellites</b> — Minimum satellites a raw GPS fix must have to count towards "
+            + "the averaged position at all. A fix with fewer satellites is discarded rather than "
+            + "averaged in, so if every fix in a cycle falls short the app reports the last good "
+            + "position instead of a fresh, possibly-inaccurate one. Set to 0 to accept every fix.<br>"
             + "<b>Display period</b> — Hours of track history shown on the map and used to calculate "
             + "Dist, Speed, and Ascent. Default: 12 h. In Photo display mode this instead sets how "
             + "often a new nearby photo is fetched automatically.<br>"
@@ -1038,7 +1073,10 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "<i>Marine</i> adds an OpenSeaMap nautical overlay (buoys, lights, seamarks) on top of OSM, "
             + "and switches the data overlay to show Course and Depth instead of Ascent and Alt. "
             + "<i>Photo</i> replaces the map with a nearby photograph from Geograph.org.uk — tap the "
-            + "re-centre button to fetch a different nearby photo.<br>"
+            + "re-centre button to fetch a different nearby photo, or wait for it to refresh "
+            + "automatically every <i>Display period</i>. Tap NEAR ME to show the photo&#39;s title, "
+            + "author, and description for 60 seconds; the source link shown is tappable and opens "
+            + "the photo&#39;s Geograph.org.uk page in your browser.<br>"
             + "<b>Start on bootup</b> — Start automatically when the phone switches on.<br><br>"
 
             + "<b>Remote Alert</b><br>"
@@ -1049,14 +1087,20 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "The trigger file is renamed to <i>YYYY-MM-DD-{alert code}.mp3</i> as a timestamped record.<br><br>"
 
             + "<b>Remote Settings</b><br>"
-            + "Every settings change is saved to <i>settings-hia.json</i> in the Nextcloud session "
-            + "folder (with the previous version kept as <i>settings-hia.bak</i>). Editing that file "
-            + "directly on Nextcloud changes the app's settings remotely — at the next upload check "
-            + "it downloads the file and applies anything different, live, with no restart needed. "
-            + "Nextcloud URL, username, and password are never applied this way, even if changed in "
-            + "the file — editing those wrong remotely would cut off the phone's only way back to "
-            + "Nextcloud. If the app's local settings are ever wiped (factory reset, cleared app "
-            + "data), it restores from this file automatically on next start.<br><br>"
+            + "Every upload cycle the app backs up its current settings to a dated file in the "
+            + "Nextcloud session folder, e.g. <i>2026-08-19-settings-hia.json</i> — one per day, "
+            + "kept for the same retention period as the log files. This backup is used to restore "
+            + "settings automatically if the app's local settings are ever wiped (factory reset, "
+            + "cleared app data).<br>"
+            + "Separately, a fixed file named <i>settings-hia.json</i> is never written by the "
+            + "phone — it exists purely for you to edit by hand. Upload a copy of it (or edit an "
+            + "existing one) into the session folder and change any values you want to push to the "
+            + "phone; at the next upload check the app notices the file has changed since it was "
+            + "last read and applies whatever differs, live, no restart needed. If you don&#39;t "
+            + "edit it, it's simply left alone — the app never overwrites your changes with its own "
+            + "current settings. Nextcloud URL, username, and password are never applied this way, "
+            + "even if changed in the file — editing those wrong remotely would cut off the phone's "
+            + "only way back to Nextcloud.<br><br>"
 
             + "<b>Log files</b> (Documents folder, auto-deleted after retention period)<br>"
             + "YYYY-MM-DD-hia.csv — one row per GPS fix, columns:<br>"
@@ -1320,6 +1364,21 @@ public class MainActivity extends Activity implements LocationService.Listener {
         if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
             try {
                 Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // Required (Android 12+) for the exact, allow-while-idle keep-alive alarm that re-asserts
+    // foreground-service status — see LocationService.scheduleKeepAlive / KeepAliveReceiver.
+    private void requestExactAlarmPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
+        android.app.AlarmManager am =
+            (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+        if (am != null && !am.canScheduleExactAlarms()) {
+            try {
+                Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
                 intent.setData(Uri.parse("package:" + getPackageName()));
                 startActivity(intent);
             } catch (Exception ignored) {}

@@ -2,7 +2,7 @@
 
 **Here I Am Now** is an Android GPS tracking app that records your location,
 saves it to log files on the phone, and uploads them automatically to a
-Nextcloud or OwnCloud server. It runs continuously in the background and can
+Nextcloud server. It runs continuously in the background and can
 alert you remotely by playing a sound, flashing the torch, vibrating the
 phone, and taking photographs.
 
@@ -17,13 +17,16 @@ devices.
 1. [Installation](#1-installation)
 2. [Main Screen](#2-main-screen)
 3. [Data Overlay](#3-data-overlay)
+   - [Photo mode](#photo-mode)
 4. [Map Controls](#4-map-controls)
 5. [Near Me Search](#5-near-me-search)
 6. [Settings](#6-settings)
 7. [Log Files](#7-log-files)
 8. [Nextcloud Upload](#8-nextcloud-upload)
+   - [Remote Settings](#remote-settings)
 9. [Remote Alert System](#9-remote-alert-system)
 10. [Background Operation](#10-background-operation)
+    - [Screen-off cadence](#screen-off-cadence)
 11. [Start on Bootup](#11-start-on-bootup)
 
 ---
@@ -60,7 +63,7 @@ location. Three buttons are always visible:
 
 Your **current location** is shown as a solid blue dot. A trail of smaller
 blue dots shows previously recorded positions within the **Display period**
-and with at least **Min satellites** in fix (see [Settings](#5-settings)).
+and with at least **Minimum satellites for a GPS fix** (see [Settings](#6-settings)).
 An optional **track line** can be drawn connecting the dots in a colour of
 your choice (see [Track colour](#track-colour) in Settings).
 
@@ -76,8 +79,12 @@ A **white bar** at the bottom of the screen shows data updated at each
 **Update interval**. The fields shown depend on the **Map type** setting.
 
 Most fields refresh only at the update interval, using the best averaged
-GPS position calculated during that cycle. The exception is **GPS fix age**,
+GPS position calculated during that cycle. The exception is **GPS age**,
 which counts up in real time every second.
+
+In **Photo** display mode the map is replaced by a nearby photograph, but the
+same data overlay bar is still shown underneath it — see
+[Photo mode](#photo-mode) below.
 
 ### Land mode (default)
 
@@ -85,7 +92,7 @@ which counts up in real time every second.
 |-------------|---------------|-------------------------------|
 | `Dist: X.XX km` | Latitude | "what3words" |
 | `Alt: X m` | Longitude | word 1 |
-| `Ascent: X m` | `GPS fix age: Xs` | word 2 |
+| `Ascent: X m` | `GPS age: Xs` | word 2 |
 | Satellites in fix | Accuracy (m) | word 3 |
 
 ### Marine mode
@@ -94,7 +101,7 @@ which counts up in real time every second.
 |-------------|---------------|-------------------------------|
 | `Dist: X.XX km` | Latitude | "what3words" |
 | `Alt / Depth` | Longitude | word 1 |
-| `Course: XXX°` | `GPS fix age: Xs` | word 2 |
+| `Course: XXX°` | `GPS age: Xs` | word 2 |
 | Satellites in fix | Accuracy (m) | word 3 |
 
 ### Dist (distance)
@@ -111,7 +118,7 @@ Cumulative altitude climbed (metres) within the display period. Only upward
 altitude changes of 5 m or more are counted, filtering out GPS altitude noise.
 Descents are ignored.
 
-### GPS fix age
+### GPS age
 Time in seconds since the last successful averaged GPS position was
 calculated. Under normal conditions this counts up from 0 to the
 **Update interval** (e.g. 0 → 60 s) then resets.
@@ -120,6 +127,14 @@ If the GPS chip loses lock or location services are unavailable, the counter
 keeps counting upward past the update interval, giving a clear indication
 that position data is stale. It resets to 0 as soon as a good averaged fix
 is calculated again.
+
+Counting up past the update interval is also *expected* — not a fault —
+whenever the screen has been off for a while: Android throttles background
+location updates once the screen turns off, so the app deliberately switches
+to a slower ~10-minute cycle to match (see
+[Background Operation](#10-background-operation)). GPS age will climb toward
+that ~600 s mark while the screen stays off, then reset back to normal as
+soon as you wake the screen.
 
 ### Course *(Marine mode only)*
 Average bearing in degrees (000°–360°) computed from the last four logged GPS
@@ -137,11 +152,37 @@ shallow waters with no data, or when the lookup is unavailable.
 
 ### What3Words
 The three-word address for the most recently logged GPS fix, updated at each
-**Update interval**. Shows `--` until the first fix is logged or while a
-lookup is in progress. The label and words are shown in **dark blue**.
+**Update interval** — but never more often than once every 60 seconds even
+if Update interval is set lower, since a lookup is a network call that
+doesn't need to run that frequently. Shows `--` until the first fix is
+logged or while a lookup is in progress. The label and words are shown in
+**dark blue**.
 
 Tapping anywhere on the What3Words column opens
 `https://w3w.co/word1.word2.word3` in the default web browser.
+
+---
+
+## Photo mode
+
+Setting **Map type** to **Photo** replaces the map with a nearby photograph
+from [Geograph.org.uk](https://www.geograph.org.uk) instead of map tiles.
+The data overlay bar at the bottom is still shown as normal.
+
+- The photo is chosen from Geograph submissions within the **Near Me
+  search radius** setting of your current position.
+- A new nearby photo is fetched automatically every **Display period**
+  (renamed **Map/track display period** in Settings) — e.g. every 2 hours
+  by default.
+- Tap the blue re-centre button (⊕) to fetch a different nearby photo
+  immediately, without waiting for the automatic refresh.
+- Tap the green **NEAR ME** button to show the photo's title, author,
+  date taken, and description as an overlay for 60 seconds (there's no map
+  to search in Photo mode, so NEAR ME is repurposed for this). Tap it again
+  to hide the overlay early.
+- The overlay's **source: geograph.org.uk/photo/N** line is a tappable
+  hyperlink (shown in the same blue as the What3Words link) — tapping it
+  opens the photo's page on geograph.org.uk in your default browser.
 
 ---
 
@@ -243,28 +284,41 @@ Default: `mobyphone`
 Use a different name for each phone so their files are stored separately on
 the server, e.g. `phone1`, `alice`, `car`.
 
-### Update interval (seconds)
-How often the app records a GPS fix and writes a row to the log files.
-Default: `60` seconds. Minimum: `10` seconds.
+### GPS update interval (10 – 3600 secs)
+How often the app records a GPS fix and writes a row to the log files, while
+the screen is on. Default: `60` seconds.
 
-### Upload interval (seconds)
-How often the app uploads the log files to Nextcloud.
-Default: `300` seconds (5 minutes). Minimum: `10` seconds.
+This is only the *foreground* cadence. Once the screen turns off, the app
+switches to a fixed ~10-minute cycle regardless of this setting, since
+Android throttles background location updates anyway — see
+[Background Operation](#10-background-operation). Turning the screen back on
+immediately returns to this interval with a fresh fix.
 
-The upload interval must be greater than or equal to the update interval.
-If a smaller value is entered, it is automatically raised to match the
-update interval when **Save** is tapped and a notification is shown.
+### Nextcloud sync interval (60 – 3600 secs)
+How often the app uploads the log files to Nextcloud, and how often it
+checks for a remote alert trigger file. Default: `300` seconds (5 minutes).
 
-### Nextcloud / OwnCloud URL
-The base URL of your Nextcloud or OwnCloud server.
+Deliberately independent of **GPS update interval** — checking for an alert
+is a cheap network request, so it's reasonable to want it checked more often
+than GPS fixes are logged (e.g. a large update interval to save battery,
+with a short sync interval so an alert is still noticed quickly). A value
+below the minimum, or above the maximum, is clamped to the nearest bound
+when **Save** is tapped and a notification is shown.
+
+### Nextcloud URL
+The base URL of your Nextcloud server.
 Example: `https://cloud.example.com`
 
-### Username / Password
-Your Nextcloud login credentials. Tap **Show** to reveal the password.
+### Nextcloud Username / Nextcloud Password (or APP password)
+Your Nextcloud login credentials. Tap **Show** to reveal the password. An
+app password generated in Nextcloud's security settings works too, and is
+recommended — it can be revoked independently of your main account password
+if the phone is ever lost.
 
-### Alert code
+### Alert code (e.g. 911 for filename: 911.mp3)
 A numeric or text code used for the remote alert feature (see
-[Section 8](#8-remote-alert-system)).
+[Section 8](#8-remote-alert-system)) — the trigger file uploaded to Nextcloud
+must be named `{alert code}.mp3`.
 Default: `911911`
 
 ### Alert photos
@@ -280,15 +334,17 @@ On devices where the camera hardware cannot be accessed through the
 standard Android Camera2 API, the app logs the failure and moves on
 without error.
 
-### Min satellites
-The minimum number of GPS satellites required for a fix to be shown as a
-small blue dot on the map. Fixes with fewer satellites than this value are
-recorded in the log files but not displayed on the map trail.
+### Minimum satellites for a GPS fix
+The minimum number of satellites a raw GPS fix must have to count towards
+the averaged position at all. A fix with fewer satellites is discarded
+before averaging, not just hidden from the map — if every fix in an update
+cycle falls short, the app reports the last known good position rather than
+logging a fresh but possibly-inaccurate one.
 Default: `4`
 
-Set to `0` to display all recorded positions regardless of GPS quality.
+Set to `0` to accept every fix regardless of satellite count.
 
-### Display period (hours)
+### Map/track display period (hours)
 How far back in time the map trail of small blue dots extends.
 Default: `12` hours.
 
@@ -296,26 +352,32 @@ This setting also defines the time window used to calculate **Dist**,
 **Speed**, **Ascent**, and **Course** in the data overlay. Changing this
 value and tapping **Save** updates the map and all figures immediately.
 
-### Num GPS fixes
+In [Photo display mode](#photo-mode), this setting instead controls how
+often a new nearby photo is fetched automatically.
+
+### GPS recent smoothing (1 – 9 fixes)
 The minimum number of GPS fixes that must be collected during an update
-cycle before the averaged position is considered reliable.
+cycle before the averaged position is considered reliable, and (while
+moving — see below) the number of most-recent fixes actually averaged.
 Default: `5`
 
-The GPS receiver runs continuously at 1-second intervals, accumulating
-all fixes received during the cycle. At the end of each update interval,
-statistical outliers are removed and the remaining fixes are averaged to
-produce the logged position. If fewer than this minimum were received
-(e.g. due to poor GPS conditions), the app still logs the best available
-average but records a warning in the `.txt` log.
+The GPS receiver runs continuously at 1-second intervals while the screen
+is on, accumulating fixes received during the cycle. Only fixes meeting
+[Minimum satellites for a GPS fix](#minimum-satellites-for-a-gps-fix) count
+towards the average. At the end of each update interval, statistical
+outliers are removed from whatever qualifying fixes were collected, and the
+rest are averaged to produce the logged position. If fewer than this
+minimum were received (e.g. due to poor GPS conditions), the app still logs
+the best available average but records a warning in the `.txt` log.
 
 **Movement detection:** the app automatically detects whether the phone
 is stationary or moving by comparing the first and last fix of the cycle.
 
-- **Stationary** (moved <25 m): all fixes in the cycle are averaged,
-  giving the best possible noise reduction.
+- **Stationary** (moved <25 m): all qualifying fixes in the cycle are
+  averaged, giving the best possible noise reduction.
 - **Moving** (moved >25 m, i.e. walking pace or faster): only the most
-  recent **Num GPS fixes** fixes are averaged. This ensures the logged
-  position reflects where you are *now*, not the midpoint of the
+  recent **GPS recent smoothing** fixes are averaged. This ensures the
+  logged position reflects where you are *now*, not the midpoint of the
   journey. At 60 km/h this avoids a ~500 m lag in the recorded position.
 
 The `.txt` log records which mode was used and how many fixes were included.
@@ -342,6 +404,7 @@ Controls the map tile source and the data overlay fields.
 |--------|-----------|--------------|
 | **Land** (default) | OpenStreetMap only | Ascent + Alt |
 | **Marine** | OSM base + OpenSeaMap nautical overlay | Course + Depth |
+| **Photo** | Nearby Geograph.org.uk photograph, no map tiles | Ascent + Alt |
 
 In **Marine** mode a transparent nautical layer from
 [OpenSeaMap](https://www.openseamap.org) is rendered on top of the standard
@@ -349,6 +412,8 @@ OSM base map, adding buoys, lights, depth contours, harbour marks, and other
 seamarks. The data overlay switches to show **Course** (average bearing from
 the last four GPS fixes) and **Depth** (GEBCO bathymetric data, fetched at
 most every 15 minutes).
+
+See [Photo mode](#photo-mode) for how the **Photo** option works.
 
 ### Log file retention (days)
 How many days of log files to keep, both on the device and on Nextcloud.
@@ -407,6 +472,7 @@ folder (`Internal Storage / Documents`):
 | `YYYY-MM-DD-hia.gpx` | GPX 1.1 | GPS track, suitable for mapping software and OSM GPS Traces |
 | `YYYY-MM-DD-hia.kml` | KML 2.2 | GPS track with both a route line and individual waypoints |
 | `YYYY-MM-DD-hia.txt` | Plain text | Debug and status log, including What3Words lookup results |
+| `YYYY-MM-DD-settings-hia.json` | JSON | Daily settings backup, uploaded to Nextcloud only — see [Remote Settings](#remote-settings) |
 
 Files roll over at midnight. Files older than the **Log file retention**
 setting (default 31 days) are deleted automatically from both the device
@@ -512,8 +578,9 @@ in Settings.
 
 ## 8. Nextcloud Upload
 
-The app uploads today's four log files (`.csv`, `.gpx`, `.kml`, `.txt`) to
-your Nextcloud server at every **upload interval**.
+The app uploads today's four log files (`.csv`, `.gpx`, `.kml`, `.txt`) and a
+dated settings backup to your Nextcloud server at every **Nextcloud sync
+interval**.
 
 Files are stored at:
 ```
@@ -526,7 +593,7 @@ https://cloud.example.com/remote.php/dav/files/myuser/hereiam/alice/
 ```
 
 The `hereiam/` and session folders are created automatically if they do not
-exist. Previous days' files are not re-uploaded.
+exist. Previous days' log files are not re-uploaded.
 
 Upload results are written to the `.txt` debug log, for example:
 
@@ -538,11 +605,46 @@ PUT 2026-02-28-hia.csv (22497 bytes) → HTTP 204
 PUT 2026-02-28-hia.gpx (39239 bytes) → HTTP 204
 PUT 2026-02-28-hia.kml (10726 bytes) → HTTP 204
 PUT 2026-02-28-hia.txt (60191 bytes) → HTTP 204
+PUT 2026-02-28-settings-hia.json (711 bytes) → HTTP 204
 Upload done: 4 file(s) → alice
 ```
 
 > HTTP 405 on MKCOL means the folder already exists — this is normal.
 > HTTP 204 on PUT means the file was uploaded successfully.
+
+### Remote Settings
+
+Every sync cycle the app backs up its current settings to a **dated** file
+in the session folder — `YYYY-MM-DD-settings-hia.json`, one per day, kept
+for the same [retention period](#log-file-retention-days) as the log files.
+This backup exists so the app can restore its settings automatically if
+they're ever wiped (factory reset, cleared app data) — it's not meant to be
+edited.
+
+Separately, a **fixed-name** file, `settings-hia.json` (no date), is never
+written by the phone — it exists purely for you to edit by hand. To change
+settings remotely:
+
+1. Download any of the dated backups (or start from scratch) and edit the
+   values you want to change.
+2. Upload it to the session folder as `settings-hia.json` (exactly that
+   name, no date).
+3. At the next sync interval, the app notices the file's content has
+   changed since it last looked and applies whatever's different — live,
+   no restart needed.
+
+If you don't touch `settings-hia.json`, it's simply left alone forever —
+the app only reacts to it when the file itself changes, so it never
+overwrites a setting you've just changed locally on the phone with its own
+current value. **Nextcloud URL, username, and password are never applied
+this way**, even if present and changed in the file — an editing mistake
+there would cut off the phone's only channel back to Nextcloud, with no way
+to recover it remotely.
+
+```
+Remote settings: applied change(s) to [update_interval_sec, map_type]
+Remote settings check: unchanged since last check (etag match) — not re-applying
+```
 
 ---
 
@@ -640,24 +742,49 @@ The app runs as an Android **foreground service**. This means:
   required by Android to keep background services running reliably.
 - If the service is killed by the system (e.g. low memory), Android
   restarts it automatically (`START_STICKY`).
-- As a foreground service it is exempt from Android Doze mode
-  restrictions — GPS and network access continue to work normally even
-  when the phone is stationary with the screen off.
+
+> Foreground-service status does **not**, on its own, guarantee continuous
+> background GPS on modern Android. On Android 15 in particular, the OS
+> throttles background location requests to roughly once every 10 minutes
+> regardless of foreground-service status, once the screen has been off for
+> a few minutes. Rather than fight this (which just burns battery
+> re-requesting updates the OS is going to ignore anyway), the app adapts
+> to it directly — see below.
+
+### Screen-off cadence
+
+While the screen is **on**, the app uses your **GPS update interval**
+setting as normal. Once the screen turns **off**, it switches to a fixed
+~10-minute cycle to match what Android actually delivers in the
+background — checking for a remote alert still happens at the separate,
+independent **Nextcloud sync interval** the whole time, so alert response
+time doesn't degrade even though position logging does. Turning the screen
+back on immediately triggers a fresh GPS fix and returns to the normal
+update interval.
+
+This means position logging is necessarily coarser while the phone is
+sitting screen-off in a pocket or bag than while actively in use — this is
+a platform-level constraint on Android 15, not something any app can fully
+opt out of.
 
 ### Battery efficiency
 
 The app is designed to minimise battery use between log ticks:
 
 - The CPU sleeps between Handler callbacks — there are no spin loops.
-- The GPS receiver runs continuously at 1-second intervals. This ensures
-  reliable fix acquisition on Android 15, where restarting GPS between
-  cycles causes long warm-up delays. The OS manages chip power internally.
+- The GPS receiver runs continuously at 1-second intervals while the
+  screen is on. This ensures reliable fix acquisition on Android 15, where
+  restarting GPS between cycles causes long warm-up delays. The OS manages
+  chip power internally.
 - The data overlay, map dot, log files, and Nextcloud notification are all
-  updated only once per **Update interval** — not on every raw GPS fix.
+  updated only once per cycle — not on every raw GPS fix.
 - Nextcloud uploads and What3Words lookups run on background threads
-  and do not block the main service loop.
+  and do not block the main service loop; What3Words lookups are further
+  capped at once every 60 seconds regardless of update interval.
 - A 60-second GPS watchdog automatically restarts location updates if no
-  raw fix is received within twice the update interval.
+  raw fix is received within twice the *current* cycle interval (so up to
+  ~20 minutes while backgrounded) — long enough to tolerate the normal
+  screen-off throttling without falsely treating it as GPS having lost lock.
 
 You can safely leave the app running continuously for days or weeks.
 
@@ -678,7 +805,7 @@ To disable this, open Settings, untick **Start on bootup**, and tap Save.
 - **Google Play Services**: not required
 - **De-Googled / custom ROM**: fully compatible
 - **Map tiles**: OpenStreetMap (internet connection required for tile loading)
-- **Nextcloud / OwnCloud**: any self-hosted instance accessible over HTTPS
+- **Nextcloud**: any self-hosted instance accessible over HTTPS
 
 ---
 
