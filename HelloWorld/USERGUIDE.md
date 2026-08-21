@@ -136,6 +136,26 @@ to a slower ~10-minute cycle to match (see
 that ~600 s mark while the screen stays off, then reset back to normal as
 soon as you wake the screen.
 
+### Satellites
+Normally shows the number of satellites contributing to the current fix,
+e.g. `Satellites: 8`. If that count hasn't been refreshed by the GPS chip
+in the last 15 seconds, it's stale and misleading to show as a number — so
+the field instead switches to **red text** showing one of three honest
+statuses:
+
+- **Searching GPS** — no fix has landed yet since the app started.
+- **Acquiring GPS** — a fix has landed before, satellite data has simply
+  gone quiet for a bit; nothing has been restarted.
+- **Restarting GPS** — the GPS watchdog (see [Battery
+  efficiency](#battery-efficiency)) has actually forced a teardown and is
+  waiting on the chip to reacquire.
+
+Only **Restarting GPS** means a restart has genuinely been triggered —
+**Acquiring GPS** can persist for up to several minutes on its own before
+the watchdog would even consider stepping in. The same status is also
+written to the log file whenever it changes — see [GPS status in the TXT
+log](#gps-status-in-the-txt-log).
+
 ### Course *(Marine mode only)*
 Average bearing in degrees (000°–360°) computed from the last four logged GPS
 positions using vector-averaged bearings. Shows `--` until at least two
@@ -525,10 +545,22 @@ Each GPS fix is written as both:
 ### GPS status in the TXT log
 
 At every update interval the app writes a summary line showing how many
-fixes were collected, satellite count, GPS fix age, and provider status:
+fixes were collected, satellite detail, GPS fix age, and provider status:
 
 ```
-Log tick: fixes-collected=58 sat=8 GPS-fix-age=61s provider=ok
+Log tick: fixes-collected=11 sat=18/16-tracked/18-visible maxCn0=39.0 GPS-fix-age=11s provider=ok
+```
+
+The satellite field breaks down as **used-in-fix / trackable / visible**,
+plus the strongest signal seen (`maxCn0`, in dB-Hz) — this makes it
+possible to tell apart "nothing visible" (visible=0), "visible but too
+weak to use" (trackable=0 with a low maxCn0), and "strong signal but the
+fix pipeline isn't using it" (trackable is high but used stays low). If
+this data hasn't been refreshed by the GPS chip in the last 15 seconds it's
+shown as stale instead, keeping the last known breakdown for reference:
+
+```
+Log tick: fixes-collected=1 sat=0 (STALE 42s, was 16/18-tracked maxCn0=39.0) GPS-fix-age=--s provider=ok
 ```
 
 This is followed by the averaging result. When stationary:
@@ -546,9 +578,27 @@ GPS avg: MOVING 820m in cycle — using last 5 of 58 fixes | pos-filter: 5 kept,
 If GPS is struggling, warnings appear:
 
 ```
-Log tick: fixes-collected=2 sat=2 GPS-fix-age=183s provider=ok
+Log tick: fixes-collected=2 sat=2/2-tracked/3-visible maxCn0=22.0 GPS-fix-age=183s provider=ok
 GPS avg: only 2 fix(es) this cycle (min=5) — using best available
 WARNING: last raw fix was 183s ago — GPS may have lost lock
+```
+
+**GPS status** lines are written whenever the on-screen [Satellites](#satellites)
+status changes — a `fresh (normal)` line marks a return to normal readings:
+
+```
+GPS status: Acquiring GPS
+GPS status: fresh (normal)
+```
+
+If satellite data stays stale long enough (at least 240 seconds, or twice
+the current cycle interval if that's longer), the **GPS watchdog** forces a
+teardown and restart of location updates, logging full diagnostics —
+including battery temperature, to help rule out thermal throttling as a
+cause — and whether the *previous* teardown actually got a fix afterwards:
+
+```
+GPS WATCHDOG: no fix for 245s (threshold 240s) provider=enabled sat=0 (STALE 245s, was 16/18-tracked maxCn0=39.0) battTemp=31.2C — forcing GPS teardown #2 since service start (previous teardown: fix DID land after it, before this one fired)
 ```
 
 ### What3Words in the TXT log
@@ -781,10 +831,14 @@ The app is designed to minimise battery use between log ticks:
 - Nextcloud uploads and What3Words lookups run on background threads
   and do not block the main service loop; What3Words lookups are further
   capped at once every 60 seconds regardless of update interval.
-- A 60-second GPS watchdog automatically restarts location updates if no
-  raw fix is received within twice the *current* cycle interval (so up to
-  ~20 minutes while backgrounded) — long enough to tolerate the normal
-  screen-off throttling without falsely treating it as GPS having lost lock.
+- A GPS watchdog (checked every 60 seconds) automatically restarts location
+  updates once no raw fix has been received for at least 240 seconds, or
+  twice the *current* cycle interval if that's longer (so up to ~20 minutes
+  while backgrounded) — long enough to tolerate the normal screen-off
+  throttling without falsely treating it as GPS having lost lock. Each
+  forced restart is logged with satellite, signal-strength, and battery
+  temperature diagnostics — see [GPS status in the TXT
+  log](#gps-status-in-the-txt-log).
 
 You can safely leave the app running continuously for days or weeks.
 
