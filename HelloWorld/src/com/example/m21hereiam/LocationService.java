@@ -174,6 +174,17 @@ public class LocationService extends Service implements LocationListener {
     // 2026-08-20: confirmed from the log — csvSatellites sat frozen at one value for 164
     // consecutive ticks spanning multiple forced GPS restarts, which real tracking wouldn't do.
     volatile long lastSatStatusUpdateMs = 0;
+    // csvSatellites (above) is "used in fix" — a satellite the chip's own algorithm has already
+    // decided is good enough to contribute to a solution. That's useless for telling apart "no
+    // signal reaching the antenna" from "signal is fine but the fix pipeline itself has stalled"
+    // — both look identical (csvSatellites=0) from that number alone. Added 2026-08-21 after a
+    // restart with TTFF=102914ms (vs the usual ~2-3s) had no other explanation available in the
+    // log: network and battery were both fine, so the slowdown had to be either weak signal or a
+    // stuck pipeline, and there was no way to tell which from what was being recorded at the time.
+    volatile int   rawSatCount     = 0; // total satellites GnssStatus reports at all, used or not
+    volatile int   trackedSatCount = 0; // of those, how many are above TRACKABLE_CN0_DB_HZ
+    volatile float maxCn0          = 0; // strongest signal seen (dB-Hz), across all reported satellites
+    private static final float TRACKABLE_CN0_DB_HZ = 15f;
     int    csvBattery    = 0;
     double lapDistanceKm = 0;
     double lapAscentM    = 0;
@@ -181,7 +192,7 @@ public class LocationService extends Service implements LocationListener {
     // ── UI callback interface ──────────────────────────────────────────────────
     interface Listener {
         void onLocationUpdate(double lat, double lon, double alt, float accuracy);
-        void onSatellitesUpdate(int count);
+        void onSatellitesUpdate(int count, boolean fresh);
         void onBatteryUpdate(int pct);
         void onAlertStarted();
         void onAlertStopped();
@@ -254,9 +265,52 @@ public class LocationService extends Service implements LocationListener {
     private String satForLog() {
         if (lastSatStatusUpdateMs == 0) return "sat=" + csvSatellites + " (never updated)";
         long ageS = (System.currentTimeMillis() - lastSatStatusUpdateMs) / 1000;
-        return ageS * 1000 > SAT_STALE_MS
-            ? String.format(Locale.US, "sat=%d (STALE %ds)", csvSatellites, ageS)
-            : "sat=" + csvSatellites;
+        if (ageS * 1000 > SAT_STALE_MS)
+            return String.format(Locale.US, "sat=%d (STALE %ds, was %d/%d-tracked maxCn0=%.1f)",
+                csvSatellites, ageS, trackedSatCount, rawSatCount, maxCn0);
+        // used-in-fix / trackable-signal / total-visible, plus best signal strength — lets a
+        // future slow restart be told apart as "nothing visible" (rawSatCount=0), "visible but
+        // too weak" (low maxCn0, trackedSatCount=0), or "strong signal, fix pipeline just isn't
+        // using it" (trackedSatCount high, maxCn0 good, but used stays low/zero anyway).
+        return String.format(Locale.US, "sat=%d/%d-tracked/%d-visible maxCn0=%.1f",
+            csvSatellites, trackedSatCount, rawSatCount, maxCn0);
+    }
+
+    // Exposed for the UI (see Listener.onSatellitesUpdate) so it can show an honest "still
+    // searching" status instead of a frozen satellite count during the same gaps this log
+    // formatter flags as stale.
+    boolean isSatFresh() {
+        return lastSatStatusUpdateMs > 0
+            && (System.currentTimeMillis() - lastSatStatusUpdateMs) <= SAT_STALE_MS;
+    }
+
+    // True only while the watchdog's forced teardown (gpsWatchdog, removeUpdates() +
+    // startLocationUpdates()) is the specific reason no fresh satellite data has arrived yet —
+    // i.e. a teardown has genuinely happened and nothing fresher has come in since. Being stale
+    // alone does NOT mean this: satellite data can go stale for up to the full watchdog
+    // threshold (up to 240s+) before any teardown is triggered at all, so a status label that
+    // said "Restarting" the whole time would be claiming an action that hadn't actually happened.
+    boolean gpsRestartInProgress() {
+        return lastTeardownTimeMs > 0 && lastTeardownTimeMs > lastSatStatusUpdateMs;
+    }
+
+    // Single source of truth for the three-way status shown in the UI (MainActivity reads this
+    // directly rather than re-deriving it) — "" when satellite data is fresh (normal display),
+    // otherwise one of the three limbo states. Also logged on every transition below, so the
+    // full history is reconstructable from the log alone rather than only visible live on screen.
+    String gpsStatusLabel() {
+        if (isSatFresh()) return "";
+        if (!hasLocation) return "Searching GPS";
+        return gpsRestartInProgress() ? "Restarting GPS" : "Acquiring GPS";
+    }
+
+    private String lastLoggedGpsStatus = "";
+    private void logGpsStatusIfChanged() {
+        String status = gpsStatusLabel();
+        if (!status.equals(lastLoggedGpsStatus)) {
+            writeLog("GPS status: " + (status.isEmpty() ? "fresh (normal)" : status));
+            lastLoggedGpsStatus = status;
+        }
     }
 
     // ── Alert state ───────────────────────────────────────────────────────────
@@ -290,11 +344,11 @@ public class LocationService extends Service implements LocationListener {
                     : (lastRawFixTimeMs > lastTeardownTimeMs
                         ? "fix DID land after it, before this one fired"
                         : "NO fix landed after it before this one fired");
-                writeLog(String.format(
-                    "GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s %s — forcing GPS teardown #%d "
-                    + "since service start (previous teardown: %s)",
+                writeLog(String.format(Locale.US,
+                    "GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s %s battTemp=%.1fC — "
+                    + "forcing GPS teardown #%d since service start (previous teardown: %s)",
                     ageMs == Long.MAX_VALUE ? -1 : ageMs / 1000, threshMs / 1000,
-                    provEnabled ? "enabled" : "DISABLED", satForLog(),
+                    provEnabled ? "enabled" : "DISABLED", satForLog(), batteryTempTenthsC / 10.0,
                     gpsWatchdogTeardownCount, prevOutcome));
                 lastTeardownTimeMs = System.currentTimeMillis();
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
@@ -309,6 +363,7 @@ public class LocationService extends Service implements LocationListener {
 
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
+            logGpsStatusIfChanged();
             if (hasLocation) {
                 long rawAgeMs = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
                 long fixAgeS  = lastFixTimeMs > 0 ? (System.currentTimeMillis() - lastFixTimeMs) / 1000 : -1;
@@ -335,7 +390,7 @@ public class LocationService extends Service implements LocationListener {
                         // Push averaged position + satellite count to UI at interval cadence
                         if (uiListener != null) {
                             uiListener.onLocationUpdate(avg[0], avg[1], avg[2], (float) avg[3]);
-                            uiListener.onSatellitesUpdate(csvSatellites);
+                            uiListener.onSatellitesUpdate(csvSatellites, isSatFresh());
                         }
                         String w3w;
                         if (w3wBackoffTicks > 0) {
@@ -420,11 +475,15 @@ public class LocationService extends Service implements LocationListener {
     };
 
     private int lastLoggedBattery = -1;
+    // Tenths of a degree C (Android's native unit for this extra) — included in watchdog teardown
+    // lines so a future slow restart can be checked against thermal throttling, not just signal.
+    volatile int batteryTempTenthsC = 0;
     private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
             csvBattery = (scale > 0) ? (level * 100 / scale) : -1;
+            batteryTempTenthsC = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0);
             if (csvBattery != lastLoggedBattery) {
                 writeLog("Battery: " + csvBattery + "%");
                 lastLoggedBattery = csvBattery;
@@ -476,11 +535,18 @@ public class LocationService extends Service implements LocationListener {
                     writeLog("GNSS first fix: TTFF=" + ttffMillis + "ms");
                 }
                 @Override public void onSatelliteStatusChanged(GnssStatus status) {
-                    int used = 0;
-                    for (int i = 0; i < status.getSatelliteCount(); i++) {
+                    int used = 0, tracked = 0, total = status.getSatelliteCount();
+                    float bestCn0 = 0;
+                    for (int i = 0; i < total; i++) {
                         if (status.usedInFix(i)) used++;
+                        float cn0 = status.getCn0DbHz(i);
+                        if (cn0 > bestCn0) bestCn0 = cn0;
+                        if (cn0 >= TRACKABLE_CN0_DB_HZ) tracked++;
                     }
-                    csvSatellites = used;
+                    csvSatellites   = used;
+                    rawSatCount     = total;
+                    trackedSatCount = tracked;
+                    maxCn0          = bestCn0;
                     lastSatStatusUpdateMs = System.currentTimeMillis();
                 }
             };
@@ -647,8 +713,7 @@ public class LocationService extends Service implements LocationListener {
         // that stale count to reject an otherwise-real fix would be worse than not gating at all,
         // so a stale reading is treated as "unknown" and never blocks a fix — only a *fresh*
         // reading below minSat does.
-        boolean satFresh = lastSatStatusUpdateMs > 0
-            && (System.currentTimeMillis() - lastSatStatusUpdateMs) <= SAT_STALE_MS;
+        boolean satFresh = isSatFresh();
         if (!satFresh || csvSatellites >= minSat) {
             fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
             if (!satFresh) {

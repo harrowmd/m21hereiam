@@ -100,7 +100,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
             bound = true;
             // Populate UI with whatever the service already knows
             onLocationUpdate(service.csvLat, service.csvLon, service.csvAlt, service.csvAccuracy);
-            onSatellitesUpdate(service.csvSatellites);
+            onSatellitesUpdate(service.csvSatellites, service.isSatFresh());
 
             onLapDistanceUpdate(service.lapDistanceKm);
             onLapAscentUpdate(service.lapAscentM);
@@ -286,10 +286,26 @@ public class MainActivity extends Activity implements LocationService.Listener {
         });
     }
 
+    private static final int SATELLITES_NORMAL_COLOUR = 0xFF000000;
+    private static final int SATELLITES_STALE_COLOUR   = 0xFFD32F2F; // Material red 700
+
     @Override
-    public void onSatellitesUpdate(final int count) {
+    public void onSatellitesUpdate(final int count, final boolean fresh) {
         runOnUiThread(new Runnable() {
-            @Override public void run() { tvSatellites.setText("Satellites: " + count); }
+            @Override public void run() {
+                if (fresh) {
+                    tvSatellites.setTextColor(SATELLITES_NORMAL_COLOUR);
+                    tvSatellites.setText("Satellites: " + count);
+                } else {
+                    // Status derivation lives in LocationService.gpsStatusLabel() — the same
+                    // method feeds the log file, so UI and log can never drift out of sync.
+                    tvSatellites.setTextColor(SATELLITES_STALE_COLOUR);
+                    String status = (!bound || service == null)
+                        ? "Searching GPS" : service.gpsStatusLabel();
+                    if (status.isEmpty()) status = "Searching GPS";
+                    tvSatellites.setText(status + "…");
+                }
+            }
         });
     }
 
