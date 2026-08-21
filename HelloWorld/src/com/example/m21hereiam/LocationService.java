@@ -787,6 +787,8 @@ public class LocationService extends Service implements LocationListener {
     // observed ~5 minute revocation window) to keep re-asserting it before it lapses.
     private volatile String lastNotifText = "Waiting for GPS…";
 
+    private long lastReaffirmForegroundMs = 0;
+
     private void reaffirmForeground() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -796,6 +798,15 @@ public class LocationService extends Service implements LocationListener {
             } else {
                 startForeground(NOTIF_ID, buildNotification(lastNotifText));
             }
+            // Success is otherwise invisible in the log (no exception, no dumpsys access from
+            // inside the app) — logging the gap since the last reaffirm lets a future log review
+            // correlate against when GNSS data actually flows, to measure how long the OEM lets
+            // foreground status stand before silently revoking it again.
+            long now = System.currentTimeMillis();
+            String gap = lastReaffirmForegroundMs == 0 ? "n/a (first this run)"
+                : ((now - lastReaffirmForegroundMs) / 1000) + "s";
+            writeLog("reaffirmForeground: startForeground OK (gap since previous: " + gap + ")");
+            lastReaffirmForegroundMs = now;
         } catch (Exception e) {
             writeLog("reaffirmForeground: startForeground failed: " + e.getMessage());
         }
@@ -810,7 +821,11 @@ public class LocationService extends Service implements LocationListener {
     // (initial start, and every keep-alive firing via KeepAliveReceiver), so the chain keeps
     // itself going — and survives the whole process being killed, since the pending alarm
     // outlives the process and will relaunch the service when it fires.
-    private static final long KEEPALIVE_INTERVAL_MS = 3 * 60 * 1000L;
+    // Was 3 minutes — live testing 2026-08-21 found isForeground=false (via dumpsys) mid-cycle
+    // even with the 3-minute cadence, meaning the OEM's revocation window is shorter than that.
+    // Tightened to 60s so reassertion tracks it more closely; the reaffirmForeground() log line
+    // above will show the actual achieved gap once this is on-device.
+    private static final long KEEPALIVE_INTERVAL_MS = 60 * 1000L;
 
     private void scheduleKeepAlive() {
         try {
