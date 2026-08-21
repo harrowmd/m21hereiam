@@ -232,6 +232,11 @@ public class LocationService extends Service implements LocationListener {
     // that gets thrown away, so the cycle interval (and the watchdog's staleness threshold)
     // switch to this once the screen is off, and back to `updateInterval` when it's on.
     private static final long BACKGROUND_INTERVAL_MS = 600_000L;
+    // Screen-off GPS request rate — see startLocationUpdates() for the battery-accounting
+    // evidence behind this. Registration stays continuously alive at this rate rather than being
+    // torn down between reports, so it shouldn't cost a full cold-start TTFF like the watchdog's
+    // teardown/restart does; this only lowers how often a report is asked for while backgrounded.
+    private static final long GPS_REQUEST_INTERVAL_SCREEN_OFF_MS = 30_000L;
     private volatile boolean screenOn = true;
     private BroadcastReceiver screenReceiver;
 
@@ -510,6 +515,13 @@ public class LocationService extends Service implements LocationListener {
                 if (screenOn == wasOn) return;
                 writeLog("Screen " + (screenOn ? "on" : "off") + " — cycle interval now "
                     + (effectiveInterval() / 1000) + "s");
+                // Re-register at the rate matching the new screen state (see
+                // GPS_REQUEST_INTERVAL_SCREEN_OFF_MS) — requestLocationUpdates() only applies the
+                // interval that was current at registration time, so this must be re-issued on
+                // every transition rather than left to whatever startLocationUpdates() set last.
+                gpsHandler.removeCallbacks(gpsWatchdog);
+                try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
+                startLocationUpdates();
                 if (screenOn) {
                     // Fresh fix promptly now that the user is likely looking at the app
                     logHandler.removeCallbacks(logTick);
@@ -653,7 +665,16 @@ public class LocationService extends Service implements LocationListener {
             return;
         }
         try {
-            // Always request at 1s to keep GPS warm — duty cycling causes long TTFF on Android 15
+            // Request at 1s while the screen is on to keep GPS warm — duty cycling (fully
+            // stopping/restarting the registration) causes long TTFF on Android 15. While the
+            // screen is off, request less often instead: batterystats confirmed 2026-08-21 this
+            // app was the single heaviest battery consumer on the device (696 mAh of ~1460 mAh
+            // total, 334 of it GNSS alone, from holding a continuous 1s request for 6+ hours) —
+            // plausibly why the OEM throttles it so hard despite every standard exemption being
+            // granted. This keeps the GPS *registration* continuously alive (no cold start, unlike
+            // a full removeUpdates/re-request duty cycle) but asks for reports far less often,
+            // to see whether looking like a lighter consumer eases that OEM-side throttling.
+            long requestIntervalMs = screenOn ? 1000L : GPS_REQUEST_INTERVAL_SCREEN_OFF_MS;
             //
             // Both calls below explicitly bind callback delivery to the main Looper rather than
             // using the implicit-Looper overloads. startLocationUpdates() isn't only ever called
@@ -664,14 +685,14 @@ public class LocationService extends Service implements LocationListener {
             // already run, so GPS was left permanently deregistered (and the watchdog reschedule,
             // later in this same method, never ran either) until the app was restarted.
             locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, 1000L, 0, this, Looper.getMainLooper());
+                LocationManager.GPS_PROVIDER, requestIntervalMs, 0, this, Looper.getMainLooper());
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
                 try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
                 locationManager.registerGnssStatusCallback(gnssCallback, gpsHandler);
             }
             boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            writeLog("Requesting GPS updates every 1s (min " + numGpsFixes + " fixes/cycle, min "
-                + minSat + " satellites required)"
+            writeLog("Requesting GPS updates every " + (requestIntervalMs / 1000) + "s (min "
+                + numGpsFixes + " fixes/cycle, min " + minSat + " satellites required)"
                 + " gps=" + (gpsEnabled ? "enabled" : "DISABLED"));
             // Start watchdog
             gpsHandler.removeCallbacks(gpsWatchdog);
