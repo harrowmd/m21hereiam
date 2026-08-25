@@ -121,6 +121,12 @@ public class LocationService extends Service implements LocationListener {
     private final java.util.List<double[]> kmlLatLon      = new java.util.ArrayList<>();
     private final java.util.List<Double>   lapAltitudes   = new java.util.ArrayList<>();
     private String kmlCurrentDate = "";
+    // Every log-tick cycle spawns its own worker Thread (see the new Thread() below), and
+    // overlapping cycles are possible (e.g. the 1s cadence during GPS acquisition), so every
+    // read/mutate/iterate of the three lists above must go through this lock. Confirmed live
+    // 2026-08-25: unsynchronized access threw ConcurrentModificationException in saveToKml
+    // when two cycles' threads overlapped.
+    private final Object kmlLock = new Object();
 
     // ── Settings ──────────────────────────────────────────────────────────────
     long   updateInterval = 60_000;
@@ -237,6 +243,23 @@ public class LocationService extends Service implements LocationListener {
     // torn down between reports, so it shouldn't cost a full cold-start TTFF like the watchdog's
     // teardown/restart does; this only lowers how often a report is asked for while backgrounded.
     private static final long GPS_REQUEST_INTERVAL_SCREEN_OFF_MS = 30_000L;
+    private static final long SCREEN_ON_REQUEST_INTERVAL_MS = 1000L;
+    // Confirmed from the log 2026-08-25: on cycles with enough fixes to tell, ~95% resolve as
+    // "static (moved <25m)" — this device spends nearly all its screen-on time stationary, yet
+    // was being polled for a fresh GPS fix every single second regardless of that. After this
+    // many consecutive static averaging cycles, back the request rate off to
+    // STATIC_BACKOFF_REQUEST_INTERVAL_MS instead of the full screen-on rate — still far more
+    // responsive than the screen-off rate, but a large cut to GNSS engagement during the
+    // (usually large) stationary majority of the day. Any single MOVING cycle, or the screen
+    // turning on, snaps straight back to the full rate — see computeAveragedPosition() and the
+    // screenReceiver below.
+    private static final int  STATIC_CYCLES_BEFORE_BACKOFF       = 3;
+    private static final long STATIC_BACKOFF_REQUEST_INTERVAL_MS = 5_000L;
+    private int  consecutiveStaticCycles = 0;
+    // The interval requestLocationUpdates() was last actually registered with, so
+    // maybeAdjustGpsRequestRate() only re-registers (and pays its teardown/restart cost) on an
+    // actual change of rate, not every cycle.
+    private volatile long registeredGpsRequestIntervalMs = -1;
     private volatile boolean screenOn = true;
     private BroadcastReceiver screenReceiver;
 
@@ -263,6 +286,30 @@ public class LocationService extends Service implements LocationListener {
     // its job and some other cause explains any remaining gaps.
     private int  gpsWatchdogTeardownCount = 0;
     private long lastTeardownTimeMs      = 0;
+
+    // Confirmed live 2026-08-25: after the app process was killed and restarted (following the
+    // saveToKml crash, now fixed above), onSatelliteStatusChanged never fired again — not once —
+    // for the rest of the run, despite the watchdog's normal removeUpdates()+startLocationUpdates()
+    // teardown/re-register cycle (which unregisters and re-registers gnssCallback every time)
+    // running 11 times in a row over the following ~4 hours with zero effect. Raw location fixes
+    // kept arriving fine the whole time, so this isn't a dead GPS provider — just the separate
+    // GnssStatus callback channel, likely left in a stuck state on the HAL/vendor side by the
+    // process having been killed rather than going through the normal onDestroy() teardown. Since
+    // in-process re-registration is empirically proven not to recover this, escalate to a full
+    // process restart (the one thing that did recover it, by accident, that day) once a few
+    // teardowns in a row all still show no progress.
+    //
+    // Checked against 2026-08-23's log afterwards: the same frozen-callback symptom happens on
+    // its own too, without any crash to trigger it — that day's satellite status sat unmoving for
+    // ~9.5 hours straight (STALE growing in lockstep with elapsed time) before recovering by
+    // itself. Comparing against a raw "== 0" check would have missed it: lastSatStatusUpdateMs
+    // was a real, non-zero timestamp the whole time, just never advancing. So instead of "is it
+    // exactly zero", track whether the value has changed at all since the *previous* teardown
+    // check — that catches a callback frozen at any value, not just one that never fired since
+    // boot.
+    private int  consecutiveSatStuckTeardowns    = 0;
+    private long lastCheckedSatStatusUpdateMs    = -1; // -1 = not yet checked this run
+    private static final int SAT_STUCK_TEARDOWNS_BEFORE_RESTART = 3;
 
     // "sat=N" for status/diagnostic log lines, flagged as stale when the underlying
     // GnssStatus callback hasn't actually fired recently — see lastSatStatusUpdateMs.
@@ -334,6 +381,20 @@ public class LocationService extends Service implements LocationListener {
         isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
     }
 
+    // SimpleDateFormat isn't thread-safe, and dateFmt/timeFmt/tsFmt/isoFmt above are shared
+    // instance fields reachable from the overlapping per-cycle worker threads (see kmlLock).
+    // Concurrent format() calls corrupted a live log line on 2026-08-25 into the invalid
+    // date "2026-08-00 03:15:04". Route every use through these synchronized accessors rather
+    // than allocating a new formatter per call (matches the existing MapView.java precedent
+    // for the same underlying issue, just without the extra allocation).
+    private String fmtDate(Date d) { synchronized (dateFmt) { return dateFmt.format(d); } }
+    private String fmtTime(Date d) { synchronized (timeFmt) { return timeFmt.format(d); } }
+    private String fmtTs(Date d)   { synchronized (tsFmt)   { return tsFmt.format(d); } }
+    private String fmtIso(Date d)  { synchronized (isoFmt)  { return isoFmt.format(d); } }
+    private Date parseTs(String s) throws java.text.ParseException {
+        synchronized (tsFmt) { return tsFmt.parse(s); }
+    }
+
     // GPS watchdog: fires every 60s; restarts GPS if no fix for 2× the current cycle interval
     // (min 4 min, raised from 2 min on 2026-08-20 — see gpsWatchdogTeardownCount comment above).
     // Threshold scales with effectiveInterval() so a backgrounded, OS-throttled gap (expected,
@@ -358,6 +419,21 @@ public class LocationService extends Service implements LocationListener {
                 lastTeardownTimeMs = System.currentTimeMillis();
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
                 startLocationUpdates();
+
+                if (lastSatStatusUpdateMs == lastCheckedSatStatusUpdateMs) {
+                    consecutiveSatStuckTeardowns++;
+                    if (consecutiveSatStuckTeardowns >= SAT_STUCK_TEARDOWNS_BEFORE_RESTART) {
+                        writeLog("GPS WATCHDOG: satellite status hasn't advanced at all across "
+                            + consecutiveSatStuckTeardowns + " consecutive in-process teardowns "
+                            + "(stuck at " + satForLog() + ") — this doesn't recover without a "
+                            + "full process restart (see 2026-08-25/08-23 incidents); restarting "
+                            + "process now");
+                        android.os.Process.killProcess(android.os.Process.myPid());
+                    }
+                } else {
+                    consecutiveSatStuckTeardowns = 0;
+                    lastCheckedSatStatusUpdateMs = lastSatStatusUpdateMs;
+                }
             }
             // Defensive: re-assert the wake lock in case it was ever released unexpectedly.
             // acquire() with no args on an already-held, non-reference-counted lock is a no-op.
@@ -433,11 +509,13 @@ public class LocationService extends Service implements LocationListener {
                         if (uiListener != null) uiListener.onLapAscentUpdate(lapAscentM);
                         computeAndUpdateCourse();
                         if (uiListener != null) uiListener.onCourseUpdate(courseDeg);
+                        int kmlLoggedCount;
+                        synchronized (kmlLock) { kmlLoggedCount = kmlLatLon.size(); }
                         if (Double.isNaN(courseDeg))
-                            writeLog("Course: insufficient fixes (" + kmlLatLon.size() + " logged)");
+                            writeLog("Course: insufficient fixes (" + kmlLoggedCount + " logged)");
                         else
                             writeLog(String.format(Locale.US, "Course: %.1f° (avg of %d bearings)",
-                                courseDeg, Math.min(3, kmlLatLon.size() - 1)));
+                                courseDeg, Math.min(3, kmlLoggedCount - 1)));
                         if ("Marine".equals(mapType)) {
                             long now = System.currentTimeMillis();
                             long secSinceFetch = (now - lastDepthFetchTime) / 1000;
@@ -515,6 +593,9 @@ public class LocationService extends Service implements LocationListener {
                 if (screenOn == wasOn) return;
                 writeLog("Screen " + (screenOn ? "on" : "off") + " — cycle interval now "
                     + (effectiveInterval() / 1000) + "s");
+                // Waking the screen is usually the user picking the device up — don't start that
+                // interaction already backed off to the static GPS rate from before it went to sleep.
+                if (screenOn) consecutiveStaticCycles = 0;
                 // Re-register at the rate matching the new screen state (see
                 // GPS_REQUEST_INTERVAL_SCREEN_OFF_MS) — requestLocationUpdates() only applies the
                 // interval that was current at registration time, so this must be re-issued on
@@ -538,6 +619,16 @@ public class LocationService extends Service implements LocationListener {
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hereiamnow:tracking");
         cpuWakeLock.setReferenceCounted(false);
         cpuWakeLock.acquire();
+
+        // screenOn defaults to true as a field initializer, and screenReceiver above only
+        // corrects it once an actual SCREEN_ON/OFF broadcast arrives — which may not happen for
+        // a long time if the screen is already off when this process starts (confirmed live
+        // 2026-08-25: a restart while asleep kept polling GPS at the full screen-on 1s rate for
+        // the rest of that quiet period). Query the real state up front instead of assuming it,
+        // so every process start — crash recovery, the GNSS-stuck self-restart above, or a plain
+        // relaunch — begins with the correct cadence rather than the screen-on one by default.
+        screenOn = powerManager.isInteractive();
+        writeLog("Initial screen state: " + (screenOn ? "on" : "off") + " (queried at startup)");
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
@@ -673,8 +764,19 @@ public class LocationService extends Service implements LocationListener {
             // plausibly why the OEM throttles it so hard despite every standard exemption being
             // granted. This keeps the GPS *registration* continuously alive (no cold start, unlike
             // a full removeUpdates/re-request duty cycle) but asks for reports far less often,
-            // to see whether looking like a lighter consumer eases that OEM-side throttling.
-            long requestIntervalMs = screenOn ? 1000L : GPS_REQUEST_INTERVAL_SCREEN_OFF_MS;
+            // to see whether looking like a lighter consumer eases that OEM-side throttling. The
+            // same idea now applies within screen-on time too: back off toward
+            // STATIC_BACKOFF_REQUEST_INTERVAL_MS once the position has been confirmed stationary
+            // for a few cycles in a row — see STATIC_CYCLES_BEFORE_BACKOFF.
+            long requestIntervalMs;
+            if (!screenOn) {
+                requestIntervalMs = GPS_REQUEST_INTERVAL_SCREEN_OFF_MS;
+            } else if (consecutiveStaticCycles >= STATIC_CYCLES_BEFORE_BACKOFF) {
+                requestIntervalMs = STATIC_BACKOFF_REQUEST_INTERVAL_MS;
+            } else {
+                requestIntervalMs = SCREEN_ON_REQUEST_INTERVAL_MS;
+            }
+            registeredGpsRequestIntervalMs = requestIntervalMs;
             //
             // Both calls below explicitly bind callback delivery to the main Looper rather than
             // using the implicit-Looper overloads. startLocationUpdates() isn't only ever called
@@ -712,6 +814,21 @@ public class LocationService extends Service implements LocationListener {
             }
         } catch (SecurityException e) {
             writeLog("SecurityException starting location updates: " + e.getMessage());
+        }
+    }
+
+    // Called at the end of every averaging cycle (see computeAveragedPosition()) once
+    // consecutiveStaticCycles is up to date. Only re-registers when the rate that
+    // startLocationUpdates() would now pick actually differs from what's currently registered,
+    // so a long stationary or moving streak doesn't re-issue requestLocationUpdates() every cycle
+    // — just once at each transition into or out of the static backoff.
+    private void maybeAdjustGpsRequestRate() {
+        if (!screenOn) return; // screen-off rate is owned by the screenReceiver transition instead
+        long desired = consecutiveStaticCycles >= STATIC_CYCLES_BEFORE_BACKOFF
+            ? STATIC_BACKOFF_REQUEST_INTERVAL_MS : SCREEN_ON_REQUEST_INTERVAL_MS;
+        if (desired != registeredGpsRequestIntervalMs) {
+            try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
+            startLocationUpdates();
         }
     }
 
@@ -1088,7 +1205,7 @@ public class LocationService extends Service implements LocationListener {
         final String sess  = session.isEmpty() ? "mobyphone" : session;
         final String alert = alertCode;
         final File   dir   = docsDir();
-        final String today = dateFmt.format(new Date());
+        final String today = fmtDate(new Date());
 
         // Keep settings-hia.json current before it's uploaded below. The returned snapshot is
         // what checkRemoteSettings() compares the later GET against — see its comment.
@@ -1384,7 +1501,7 @@ public class LocationService extends Service implements LocationListener {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    String today   = dateFmt.format(new Date());
+                    String today   = fmtDate(new Date());
                     String newName = today + "-" + fileName;
                     String destUrl = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1)
                                      + enc(newName);
@@ -1611,7 +1728,7 @@ public class LocationService extends Service implements LocationListener {
                 sessRef[0].stopRepeating();
 
                 String timestamp = new java.text.SimpleDateFormat("HHmmss", Locale.US).format(new Date());
-                String today     = dateFmt.format(new Date());
+                String today     = fmtDate(new Date());
                 final String fileName = today + "-" + timestamp + "-hia-alert-" + facingName + "-" + photoNum + ".jpg";
                 final File outFile    = new File(docsDir(), fileName);
                 boolean photoSaved    = false;
@@ -1867,6 +1984,8 @@ public class LocationService extends Service implements LocationListener {
         double dlonM = (lastFix[1] - firstFix[1]) * 111000;
         double moveMetres = Math.sqrt(dlatM * dlatM + dlonM * dlonM);
         boolean moving = moveMetres > 25.0;
+        if (moving) consecutiveStaticCycles = 0; else consecutiveStaticCycles++;
+        maybeAdjustGpsRequestRate();
 
         // When moving, use only the most recent numGpsFixes fixes so the result
         // reflects current position rather than the midpoint of the journey
@@ -1965,7 +2084,7 @@ public class LocationService extends Service implements LocationListener {
     private void saveToCsv(double[] avg, String w3w) {
         File dir  = docsDir();
         Date now  = new Date();
-        File file = new File(dir, dateFmt.format(now) + "-hia.csv");
+        File file = new File(dir, fmtDate(now) + "-hia.csv");
         boolean isNew = !file.exists();
 
         // Upgrade old-format header in-place (one-time cost per file)
@@ -2000,7 +2119,7 @@ public class LocationService extends Service implements LocationListener {
             String w3wVal    = w3w.isEmpty() ? "" : "https://w3w.co/" + w3w;
             fw.write(String.format(Locale.US,
                 "%s,%s,%s,%.6f,%.6f,%.2f,%.1f,%s,%s,%.1f,%.1f,%.1f,%d,%d,%s\n",
-                tsFmt.format(now), dateFmt.format(now), timeFmt.format(now),
+                fmtTs(now), fmtDate(now), fmtTime(now),
                 avg[0], avg[1],
                 lapDistanceKm, speedKmh, courseStr, depthStr,
                 avg[2], lapAscentM, avg[3],
@@ -2016,7 +2135,7 @@ public class LocationService extends Service implements LocationListener {
     private void saveToGpx(double[] avg) {
         File dir  = docsDir();
         Date now  = new Date();
-        File file = new File(dir, dateFmt.format(now) + "-hia.gpx");
+        File file = new File(dir, fmtDate(now) + "-hia.gpx");
         try {
             if (!file.exists()) {
                 FileWriter fw = new FileWriter(file);
@@ -2025,7 +2144,7 @@ public class LocationService extends Service implements LocationListener {
                 fw.write("    xmlns=\"http://www.topografix.com/GPX/1/1\"\n");
                 fw.write("    xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n");
                 fw.write("    xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
-                fw.write("  <trk><name>" + dateFmt.format(now) + "</name><trkseg>\n");
+                fw.write("  <trk><name>" + fmtDate(now) + "</name><trkseg>\n");
                 fw.close();
             } else {
                 RandomAccessFile raf = new RandomAccessFile(file, "rw");
@@ -2035,7 +2154,7 @@ public class LocationService extends Service implements LocationListener {
             FileWriter fw = new FileWriter(file, true);
             fw.write(String.format(Locale.US,
                 "      <trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele><time>%s</time><sat>%d</sat></trkpt>\n",
-                avg[0], avg[1], avg[2], isoFmt.format(now), csvSatellites));
+                avg[0], avg[1], avg[2], fmtIso(now), csvSatellites));
             fw.write(GPX_CLOSE);
             fw.close();
         } catch (IOException e) {
@@ -2047,55 +2166,57 @@ public class LocationService extends Service implements LocationListener {
     private void saveToKml(double[] avg) {
         File   dir   = docsDir();
         Date   now   = new Date();
-        String today = dateFmt.format(now);
+        String today = fmtDate(now);
         File   file  = new File(dir, today + "-hia.kml");
 
-        // Clear list on date rollover
-        if (!today.equals(kmlCurrentDate)) {
-            kmlTimestamps.clear();
-            kmlLatLon.clear();
-            lapAltitudes.clear();
-            kmlCurrentDate = today;
-        }
-        // Reload from CSV if list is empty (service restart)
-        if (kmlTimestamps.isEmpty() && file.exists()) {
-            loadKmlFromCsv(dir, today);
-        }
-
-        kmlTimestamps.add(tsFmt.format(now));
-        kmlLatLon.add(new double[]{avg[0], avg[1]}); // averaged lat, lon
-        lapAltitudes.add(avg[2]);                    // averaged altitude
-
-        try {
-            FileWriter fw = new FileWriter(file, false); // overwrite each time
-            fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-            fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
-            fw.write("  <Document>\n");
-            fw.write("    <name>" + today + "</name>\n");
-            fw.write("    <Style id=\"track\"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>\n");
-            // Individual Point placemarks (POIs)
-            for (int i = 0; i < kmlTimestamps.size(); i++) {
-                double[] ll = kmlLatLon.get(i);
-                fw.write(String.format(Locale.US,
-                    "    <Placemark><name>%s</name><Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>\n",
-                    kmlTimestamps.get(i), ll[1], ll[0]));
+        synchronized (kmlLock) {
+            // Clear list on date rollover
+            if (!today.equals(kmlCurrentDate)) {
+                kmlTimestamps.clear();
+                kmlLatLon.clear();
+                lapAltitudes.clear();
+                kmlCurrentDate = today;
             }
-            // LineString track (only if 2+ points)
-            if (kmlLatLon.size() >= 2) {
-                fw.write("    <Placemark><name>Track</name><styleUrl>#track</styleUrl>\n");
-                fw.write("      <LineString><tessellate>1</tessellate>\n");
-                fw.write("        <coordinates>\n");
-                for (double[] ll : kmlLatLon) {
-                    fw.write(String.format(Locale.US, "          %.6f,%.6f,0\n", ll[1], ll[0]));
+            // Reload from CSV if list is empty (service restart)
+            if (kmlTimestamps.isEmpty() && file.exists()) {
+                loadKmlFromCsv(dir, today);
+            }
+
+            kmlTimestamps.add(fmtTs(now));
+            kmlLatLon.add(new double[]{avg[0], avg[1]}); // averaged lat, lon
+            lapAltitudes.add(avg[2]);                    // averaged altitude
+
+            try {
+                FileWriter fw = new FileWriter(file, false); // overwrite each time
+                fw.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                fw.write("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
+                fw.write("  <Document>\n");
+                fw.write("    <name>" + today + "</name>\n");
+                fw.write("    <Style id=\"track\"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>\n");
+                // Individual Point placemarks (POIs)
+                for (int i = 0; i < kmlTimestamps.size(); i++) {
+                    double[] ll = kmlLatLon.get(i);
+                    fw.write(String.format(Locale.US,
+                        "    <Placemark><name>%s</name><Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>\n",
+                        kmlTimestamps.get(i), ll[1], ll[0]));
                 }
-                fw.write("        </coordinates>\n");
-                fw.write("      </LineString>\n");
-                fw.write("    </Placemark>\n");
+                // LineString track (only if 2+ points)
+                if (kmlLatLon.size() >= 2) {
+                    fw.write("    <Placemark><name>Track</name><styleUrl>#track</styleUrl>\n");
+                    fw.write("      <LineString><tessellate>1</tessellate>\n");
+                    fw.write("        <coordinates>\n");
+                    for (double[] ll : kmlLatLon) {
+                        fw.write(String.format(Locale.US, "          %.6f,%.6f,0\n", ll[1], ll[0]));
+                    }
+                    fw.write("        </coordinates>\n");
+                    fw.write("      </LineString>\n");
+                    fw.write("    </Placemark>\n");
+                }
+                fw.write("  </Document>\n</kml>\n");
+                fw.close();
+            } catch (IOException e) {
+                writeLog("KML write error: " + e.getMessage());
             }
-            fw.write("  </Document>\n</kml>\n");
-            fw.close();
-        } catch (IOException e) {
-            writeLog("KML write error: " + e.getMessage());
         }
         deleteOldFiles(dir, "-hia.kml");
     }
@@ -2150,14 +2271,16 @@ public class LocationService extends Service implements LocationListener {
         long cutoff = System.currentTimeMillis() - displayPeriodHours * 3600_000L;
         double total = 0;
         double[] prev = null;
-        for (int i = 0; i < kmlTimestamps.size(); i++) {
-            try {
-                Date ts = tsFmt.parse(kmlTimestamps.get(i));
-                if (ts == null || ts.getTime() < cutoff) continue;
-                double[] ll = kmlLatLon.get(i);
-                if (prev != null) total += haversine(prev[0], prev[1], ll[0], ll[1]);
-                prev = ll;
-            } catch (Exception ignored) {}
+        synchronized (kmlLock) {
+            for (int i = 0; i < kmlTimestamps.size(); i++) {
+                try {
+                    Date ts = parseTs(kmlTimestamps.get(i));
+                    if (ts == null || ts.getTime() < cutoff) continue;
+                    double[] ll = kmlLatLon.get(i);
+                    if (prev != null) total += haversine(prev[0], prev[1], ll[0], ll[1]);
+                    prev = ll;
+                } catch (Exception ignored) {}
+            }
         }
         return total;
     }
@@ -2170,23 +2293,25 @@ public class LocationService extends Service implements LocationListener {
         long cutoff = System.currentTimeMillis() - displayPeriodHours * 3600_000L;
         double total = 0;
         Double prevAlt = null;
-        for (int i = 0; i < kmlTimestamps.size(); i++) {
-            try {
-                Date ts = tsFmt.parse(kmlTimestamps.get(i));
-                if (ts == null || ts.getTime() < cutoff) continue;
-                double alt = lapAltitudes.get(i);
-                if (prevAlt != null) {
-                    double gain = alt - prevAlt;
-                    if (gain >= MIN_ASCENT_STEP_M) {
-                        total += gain;
-                        prevAlt = alt; // only advance baseline on a counted step
-                    } else if (alt < prevAlt) {
-                        prevAlt = alt; // track descents so we don't re-count the same climb
+        synchronized (kmlLock) {
+            for (int i = 0; i < kmlTimestamps.size(); i++) {
+                try {
+                    Date ts = parseTs(kmlTimestamps.get(i));
+                    if (ts == null || ts.getTime() < cutoff) continue;
+                    double alt = lapAltitudes.get(i);
+                    if (prevAlt != null) {
+                        double gain = alt - prevAlt;
+                        if (gain >= MIN_ASCENT_STEP_M) {
+                            total += gain;
+                            prevAlt = alt; // only advance baseline on a counted step
+                        } else if (alt < prevAlt) {
+                            prevAlt = alt; // track descents so we don't re-count the same climb
+                        }
+                    } else {
+                        prevAlt = alt;
                     }
-                } else {
-                    prevAlt = alt;
-                }
-            } catch (Exception ignored) {}
+                } catch (Exception ignored) {}
+            }
         }
         return total;
     }
@@ -2194,28 +2319,30 @@ public class LocationService extends Service implements LocationListener {
     // ── Course and depth ──────────────────────────────────────────────────────
 
     private void computeAndUpdateCourse() {
-        int size = kmlLatLon.size();
-        if (size < 2) { courseDeg = Double.NaN; return; }
-        int n = Math.min(4, size);
-        int start = size - n;
-        double sinSum = 0, cosSum = 0;
-        int count = 0;
-        for (int i = start; i < size - 1; i++) {
-            double[] a = kmlLatLon.get(i);
-            double[] b = kmlLatLon.get(i + 1);
-            double lat1 = Math.toRadians(a[0]), lat2 = Math.toRadians(b[0]);
-            double dlon = Math.toRadians(b[1] - a[1]);
-            double y = Math.sin(dlon) * Math.cos(lat2);
-            double x = Math.cos(lat1) * Math.sin(lat2)
-                     - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dlon);
-            double bearing = Math.toDegrees(Math.atan2(y, x));
-            sinSum += Math.sin(Math.toRadians(bearing));
-            cosSum += Math.cos(Math.toRadians(bearing));
-            count++;
+        synchronized (kmlLock) {
+            int size = kmlLatLon.size();
+            if (size < 2) { courseDeg = Double.NaN; return; }
+            int n = Math.min(4, size);
+            int start = size - n;
+            double sinSum = 0, cosSum = 0;
+            int count = 0;
+            for (int i = start; i < size - 1; i++) {
+                double[] a = kmlLatLon.get(i);
+                double[] b = kmlLatLon.get(i + 1);
+                double lat1 = Math.toRadians(a[0]), lat2 = Math.toRadians(b[0]);
+                double dlon = Math.toRadians(b[1] - a[1]);
+                double y = Math.sin(dlon) * Math.cos(lat2);
+                double x = Math.cos(lat1) * Math.sin(lat2)
+                         - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dlon);
+                double bearing = Math.toDegrees(Math.atan2(y, x));
+                sinSum += Math.sin(Math.toRadians(bearing));
+                cosSum += Math.cos(Math.toRadians(bearing));
+                count++;
+            }
+            if (count == 0) { courseDeg = Double.NaN; return; }
+            double avg = Math.toDegrees(Math.atan2(sinSum / count, cosSum / count));
+            courseDeg = (avg + 360) % 360;
         }
-        if (count == 0) { courseDeg = Double.NaN; return; }
-        double avg = Math.toDegrees(Math.atan2(sinSum / count, cosSum / count));
-        courseDeg = (avg + 360) % 360;
     }
 
     private double fetchDepth(double lat, double lon) {
@@ -2348,10 +2475,10 @@ public class LocationService extends Service implements LocationListener {
         Log.d(TAG, message);
         File dir = docsDir();
         Date now = new Date();
-        File logFile = new File(dir, dateFmt.format(now) + "-hia.txt");
+        File logFile = new File(dir, fmtDate(now) + "-hia.txt");
         try {
             FileWriter fw = new FileWriter(logFile, true);
-            fw.write(tsFmt.format(now) + " " + message + "\n");
+            fw.write(fmtTs(now) + " " + message + "\n");
             fw.close();
         } catch (IOException ignored) {}
     }
@@ -2399,7 +2526,7 @@ public class LocationService extends Service implements LocationListener {
         int deleted = 0;
         // Try to DELETE files for dates from retentionDays to retentionDays+30 days ago
         for (int age = retentionDays; age <= retentionDays + 30; age++) {
-            String dateStr = dateFmt.format(new Date(now - age * dayMs));
+            String dateStr = fmtDate(new Date(now - age * dayMs));
             for (String suffix : LOG_SUFFIXES) {
                 String fileName = dateStr + suffix;
                 if (deleteNextcloudFile(sessionDir, fileName, auth)) {
