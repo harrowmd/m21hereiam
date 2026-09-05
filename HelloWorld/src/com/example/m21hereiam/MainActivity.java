@@ -216,7 +216,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                 }
                 if (!mapView.hasGpsLocation()) {
                     android.widget.Toast.makeText(MainActivity.this,
-                        "No GPS fix yet", android.widget.Toast.LENGTH_SHORT).show();
+                        "No location fix yet", android.widget.Toast.LENGTH_SHORT).show();
                     return;
                 }
                 doNearbySearch(btnNearby);
@@ -295,7 +295,11 @@ public class MainActivity extends Activity implements LocationService.Listener {
             @Override public void run() {
                 if (fresh) {
                     tvSatellites.setTextColor(SATELLITES_NORMAL_COLOUR);
-                    tvSatellites.setText("Satellites: " + count);
+                    // Devices with no working GPS chip are using network-based location instead
+                    // (see LocationService.hasGpsFeature/usingNetworkFallback) — there's no
+                    // satellite count to show there, so say so instead of a permanent "0".
+                    tvSatellites.setText((bound && service != null && !service.satelliteTrackingActive())
+                        ? "Location: Network" : "Satellites: " + count);
                 } else {
                     // Status derivation lives in LocationService.gpsStatusLabel() — the same
                     // method feeds the log file, so UI and log can never drift out of sync.
@@ -728,6 +732,23 @@ public class MainActivity extends Activity implements LocationService.Listener {
         final EditText editSession = editText(InputType.TYPE_CLASS_TEXT, service.session);
         layout.addView(editSession);
 
+        layout.addView(label("Location Services"));
+        final String[] locationModeValues  = {"GPS", "Network", "Auto", "Hybrid"};
+        final String[] locationModeLabels  =
+            {"GPS only", "Network only", "Auto-detect for device", "GPS (then Network)"};
+        final android.widget.Spinner spinnerLocationMode = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<String> locationModeAdapter = new android.widget.ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, locationModeLabels);
+        locationModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerLocationMode.setAdapter(locationModeAdapter);
+        for (int i = 0; i < locationModeValues.length; i++) {
+            if (locationModeValues[i].equals(service.locationMode)) {
+                spinnerLocationMode.setSelection(i);
+                break;
+            }
+        }
+        layout.addView(spinnerLocationMode);
+
         layout.addView(label("GPS update interval (10 - 3600 secs)"));
         final EditText editInterval = editText(InputType.TYPE_CLASS_NUMBER,
             String.valueOf(service.updateInterval / 1000));
@@ -894,6 +915,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                     if (!bound) return;
                     service.session = editSession.getText().toString().trim();
                     if (service.session.isEmpty()) service.session = "mobyphone";
+                    service.locationMode = locationModeValues[spinnerLocationMode.getSelectedItemPosition()];
                     try {
                         int parsedInterval = Integer.parseInt(editInterval.getText().toString().trim());
                         int clampedInterval = Math.max(10, Math.min(3600, parsedInterval));
@@ -976,6 +998,7 @@ public class MainActivity extends Activity implements LocationService.Listener {
                         .putInt    (LocationService.PREF_RETENTION_DAYS,  service.retentionDays)
                         .putString (LocationService.PREF_MAP_TYPE,         service.mapType)
                         .putString (LocationService.PREF_ALERT_VOLUME,     service.alertVolume)
+                        .putString (LocationService.PREF_LOCATION_MODE,    service.locationMode)
                         .apply();
                     service.applySettings();
                     service.writeSettingsSnapshot();
@@ -1061,6 +1084,18 @@ public class MainActivity extends Activity implements LocationService.Listener {
             + "<b>Settings</b><br>"
             + "<b>Session name</b> — Nextcloud subfolder for this device&#39;s files. "
             + "Use a different name per device (e.g. phone1, car).<br>"
+            + "<b>Location Services</b> — <i>GPS only</i>: always uses GPS, never falls back "
+            + "(for a device you know has a working GPS chip). <i>Network only</i>: skips GPS "
+            + "entirely and uses Wi-Fi/cell-based location from the start — for a device with no "
+            + "GPS chip, or one that declares GPS support in software without a working antenna. "
+            + "<i>Auto-detect for device</i> (default) — tries GPS first, and switches to network "
+            + "location <b>permanently, for the rest of that run</b> if GPS produces zero fixes for "
+            + "12 minutes straight (won&#39;t switch back even if GPS recovers later — restart the "
+            + "app, or re-save Settings, to give it a fresh chance). <i>GPS (then Network)</i> — for "
+            + "hardware with flaky or intermittent GPS: re-decided every single cycle rather than "
+            + "once, so if GPS produces nothing this cycle a network fix collected in parallel is "
+            + "used just for that cycle instead, with no lasting effect on the next one. GPS and "
+            + "network fixes are never averaged together within any single cycle in any mode.<br>"
             + "<b>Update interval</b> — How often a GPS fix is recorded. Default: 60 s (10–3600 s).<br>"
             + "<b>Num GPS fixes</b> — Samples averaged per log entry to improve accuracy. "
             + "Default: 5 (1–9 fixes).<br>"

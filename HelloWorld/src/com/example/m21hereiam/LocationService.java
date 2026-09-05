@@ -106,6 +106,7 @@ public class LocationService extends Service implements LocationListener {
     static final String PREF_RETENTION_DAYS  = "retention_days";
     static final String PREF_MAP_TYPE        = "map_type";
     static final String PREF_ALERT_VOLUME    = "alert_volume";
+    static final String PREF_LOCATION_MODE   = "location_mode";
 
     private static final String[] LOG_SUFFIXES = {
         "-hia.csv", "-hia.gpx", "-hia.kml", "-hia.txt"
@@ -228,9 +229,62 @@ public class LocationService extends Service implements LocationListener {
     private LocationManager     locationManager;
     private GnssStatus.Callback gnssCallback;
 
+    // "Hybrid" mode's secondary, always-parallel registration — a fresh network fix collected
+    // here is only ever actually used (see logTick) on a cycle where GPS produced nothing at
+    // all, and is never mixed with GPS fixes within a single average. Fixed, modest interval
+    // rather than mirroring GPS's screen-on/off/static-backoff adaptive rate: network fixes are
+    // inherently coarse and already far less frequent in practice than requested (confirmed live
+    // ~1 per 14s even at a 1s request), so there's little to gain from a more elaborate schedule.
+    private volatile double  netLat, netLon, netAlt;
+    private volatile float   netAccuracy;
+    private volatile long    lastNetworkFixTimeMs = 0;
+    private final LocationListener networkFallbackListener = new LocationListener() {
+        @Override public void onLocationChanged(Location loc) {
+            netLat = loc.getLatitude();
+            netLon = loc.getLongitude();
+            netAlt = loc.getAltitude();
+            netAccuracy = loc.getAccuracy();
+            lastNetworkFixTimeMs = System.currentTimeMillis();
+        }
+        @Override public void onStatusChanged(String p, int s, Bundle e) {}
+        @Override public void onProviderEnabled(String p) {}
+        @Override public void onProviderDisabled(String p) {}
+    };
+
     boolean hasLocation      = false; // true once a real GPS fix has been received
     long    lastFixTimeMs    = 0;    // time of last successful averaged-position calculation (UI display)
     long    lastRawFixTimeMs = 0;    // time of last raw GPS fix arrival (watchdog)
+
+    // Some tablets declare FEATURE_LOCATION_GPS in software with no GPS antenna actually
+    // fitted — confirmed live 2026-09-05 on a Q3-EEA tablet: hasSystemFeature() said yes, but
+    // 30+ minutes of requests produced zero raw fixes and the satellite callback never fired
+    // once. hasGpsFeature is the fast static check (also avoids ever requesting GPS_PROVIDER on
+    // hardware that doesn't support the concept at all).
+    //
+    // locationMode (Settings > Location Services) is the user's own override of what the
+    // hardware/auto-detect logic below would otherwise decide:
+    //  "GPS"     — pins to GPS forever, never auto-falls-back. For a device the user knows has a
+    //              working chip but that might otherwise take the full grace period to prove it
+    //              (e.g. a slow first fix indoors).
+    //  "Network" — skips GPS entirely from the very first request, no grace-period wait at all.
+    //              For a device the user already knows — like that Q3-EEA tablet — has no
+    //              working chip.
+    //  "Auto"    — (default) try GPS, fall back to network permanently after
+    //              GPS_FALLBACK_GRACE_MS of literally zero fixes — a one-time, one-way decision
+    //              for the rest of this run. usingNetworkFallback is this mode's own runtime
+    //              verdict, only ever consulted while locationMode is "Auto".
+    //  "Hybrid"  — ("GPS (then Network)" in the UI) re-decided every single cycle rather than
+    //              once: GPS is requested continuously exactly as normal, but if it produced no
+    //              qualifying fix THIS cycle, a network fix collected in parallel (see
+    //              networkFallbackListener) is used for that cycle instead — never sticky, so a
+    //              device with intermittently-flaky GPS can recover on the very next cycle
+    //              rather than being stuck on whatever "Auto" decided once. GPS and network
+    //              fixes are still never averaged together within a single cycle.
+    private boolean          hasGpsFeature;
+    String                   locationMode = "Auto"; // "GPS" | "Network" | "Auto" | "Hybrid" — see above
+    private volatile boolean usingNetworkFallback = false;
+    private long             serviceStartTimeMs   = 0;
+    private static final long GPS_FALLBACK_GRACE_MS = 12 * 60_000L; // 12 minutes
 
     // Confirmed live on Android 15/RugKing: once backgrounded, the OS clamps location request
     // intervals to ~10 minutes regardless of what's requested (location_background_throttle_
@@ -314,7 +368,13 @@ public class LocationService extends Service implements LocationListener {
     // "sat=N" for status/diagnostic log lines, flagged as stale when the underlying
     // GnssStatus callback hasn't actually fired recently — see lastSatStatusUpdateMs.
     private static final long SAT_STALE_MS = 15_000L;
+    // NETWORK_PROVIDER fixes arrive far less regularly than GPS's 1s cadence even when
+    // requested at 1s (confirmed live: ~1 fix per 14s on this test device, Wi-Fi-scan limited)
+    // — reusing SAT_STALE_MS here would make isFixFresh() flicker to "Acquiring location"
+    // between every fix despite nothing actually being wrong.
+    private static final long NETWORK_FIX_STALE_MS = 60_000L;
     private String satForLog() {
+        if (!satelliteTrackingActive()) return "sat=n/a (network location, no satellite data)";
         if (lastSatStatusUpdateMs == 0) return "sat=" + csvSatellites + " (never updated)";
         long ageS = (System.currentTimeMillis() - lastSatStatusUpdateMs) / 1000;
         if (ageS * 1000 > SAT_STALE_MS)
@@ -336,6 +396,38 @@ public class LocationService extends Service implements LocationListener {
             && (System.currentTimeMillis() - lastSatStatusUpdateMs) <= SAT_STALE_MS;
     }
 
+    // The provider actually in use right now — see hasGpsFeature/usingNetworkFallback above.
+    private String activeProvider() {
+        return satelliteTrackingActive() ? LocationManager.GPS_PROVIDER : LocationManager.NETWORK_PROVIDER;
+    }
+
+    // Whether satellite-based diagnostics (GNSS status callback, min-satellite fix gating,
+    // the stuck-satellite watchdog escalation) are meaningful right now. False for the whole
+    // life of the service on a device with no GPS feature at all, or one the user has forced to
+    // "Network" mode; for "Auto" (the default), also flipped false permanently by the
+    // gpsWatchdog's GPS_FALLBACK_GRACE_MS check once GPS has proven itself non-functional.
+    // "GPS" and "Hybrid" never fall back this way — see locationMode. NETWORK_PROVIDER has no
+    // satellite concept, so none of that logic applies once this is false — see
+    // onLocationChanged() and gpsWatchdog.
+    boolean satelliteTrackingActive() {
+        if (!hasGpsFeature || "Network".equals(locationMode)) return false;
+        if ("GPS".equals(locationMode) || "Hybrid".equals(locationMode)) return true;
+        return !usingNetworkFallback; // "Auto": auto-detect's own runtime verdict applies
+    }
+
+    // Single freshness signal behind both gpsStatusLabel() and the UI's satellite-count display
+    // (see Listener.onSatellitesUpdate) — satellite-callback based while GPS is genuinely in use
+    // (unchanged from before). Judged from raw fix recency instead when there's no satellite
+    // channel to watch at all ("Network"/fallen-back "Auto"), or — "Hybrid" specifically — when
+    // GPS's own satellite data may be stale/absent but a same-cycle network substitute (see
+    // logTick/recordNetworkFallbackFix) is keeping lastRawFixTimeMs current regardless of source.
+    boolean isFixFresh() {
+        if (!satelliteTrackingActive() || "Hybrid".equals(locationMode)) {
+            return lastRawFixTimeMs > 0 && (System.currentTimeMillis() - lastRawFixTimeMs) <= NETWORK_FIX_STALE_MS;
+        }
+        return isSatFresh();
+    }
+
     // True only while the watchdog's forced teardown (gpsWatchdog, removeUpdates() +
     // startLocationUpdates()) is the specific reason no fresh satellite data has arrived yet —
     // i.e. a teardown has genuinely happened and nothing fresher has come in since. Being stale
@@ -351,9 +443,10 @@ public class LocationService extends Service implements LocationListener {
     // otherwise one of the three limbo states. Also logged on every transition below, so the
     // full history is reconstructable from the log alone rather than only visible live on screen.
     String gpsStatusLabel() {
-        if (isSatFresh()) return "";
-        if (!hasLocation) return "Searching GPS";
-        return gpsRestartInProgress() ? "Restarting GPS" : "Acquiring GPS";
+        if (isFixFresh()) return "";
+        String word = (satelliteTrackingActive() && !"Hybrid".equals(locationMode)) ? "GPS" : "location";
+        if (!hasLocation) return "Searching " + word;
+        return gpsRestartInProgress() ? "Restarting " + word : "Acquiring " + word;
     }
 
     private String lastLoggedGpsStatus = "";
@@ -401,9 +494,34 @@ public class LocationService extends Service implements LocationListener {
     // up to ~10 min) isn't mistaken for GPS having lost lock.
     private final Runnable gpsWatchdog = new Runnable() {
         @Override public void run() {
+            // Give up on GPS for the rest of this run if it's had a fair chance (a real chip
+            // manages at least one fix, and satellite visibility, well within this window even
+            // with a slow first fix indoors) and produced literally nothing — see hasGpsFeature/
+            // usingNetworkFallback. Only in "Auto" mode: "GPS" mode means the user has told the
+            // app this device's GPS does work, so it should keep retrying rather than silently
+            // switching away, and "Hybrid" already re-decides every cycle on its own — neither
+            // wants this one-time permanent verdict — see locationMode. Checked before anything
+            // else below since it changes which provider the rest of this method (and
+            // startLocationUpdates()) should be using.
+            if ("Auto".equals(locationMode) && satelliteTrackingActive() && !hasLocation
+                    && System.currentTimeMillis() - serviceStartTimeMs > GPS_FALLBACK_GRACE_MS) {
+                usingNetworkFallback = true;
+                writeLog(String.format(Locale.US,
+                    "GPS WATCHDOG: no fix in %ds since start despite GPS hardware being declared "
+                    + "— assuming this device has no functional GPS chip and switching to "
+                    + "network-based location for the rest of this run",
+                    (System.currentTimeMillis() - serviceStartTimeMs) / 1000));
+                try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
+                    try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
+                }
+                startLocationUpdates(); // re-schedules this same watchdog itself — see below
+                return;
+            }
             long ageMs   = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
             long threshMs = Math.max(effectiveInterval() * 2, 240_000L);
-            boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            String provider = activeProvider();
+            boolean provEnabled = locationManager.isProviderEnabled(provider);
             if (ageMs > threshMs) {
                 gpsWatchdogTeardownCount++;
                 String prevOutcome = lastTeardownTimeMs == 0 ? "n/a (first teardown this run)"
@@ -411,28 +529,30 @@ public class LocationService extends Service implements LocationListener {
                         ? "fix DID land after it, before this one fired"
                         : "NO fix landed after it before this one fired");
                 writeLog(String.format(Locale.US,
-                    "GPS WATCHDOG: no fix for %ds (threshold %ds) provider=%s %s battTemp=%.1fC — "
-                    + "forcing GPS teardown #%d since service start (previous teardown: %s)",
-                    ageMs == Long.MAX_VALUE ? -1 : ageMs / 1000, threshMs / 1000,
+                    "%s WATCHDOG: no fix for %ds (threshold %ds) provider=%s %s battTemp=%.1fC — "
+                    + "forcing %s teardown #%d since service start (previous teardown: %s)",
+                    provider, ageMs == Long.MAX_VALUE ? -1 : ageMs / 1000, threshMs / 1000,
                     provEnabled ? "enabled" : "DISABLED", satForLog(), batteryTempTenthsC / 10.0,
-                    gpsWatchdogTeardownCount, prevOutcome));
+                    provider, gpsWatchdogTeardownCount, prevOutcome));
                 lastTeardownTimeMs = System.currentTimeMillis();
                 try { locationManager.removeUpdates(LocationService.this); } catch (Exception ignored) {}
                 startLocationUpdates();
 
-                if (lastSatStatusUpdateMs == lastCheckedSatStatusUpdateMs) {
-                    consecutiveSatStuckTeardowns++;
-                    if (consecutiveSatStuckTeardowns >= SAT_STUCK_TEARDOWNS_BEFORE_RESTART) {
-                        writeLog("GPS WATCHDOG: satellite status hasn't advanced at all across "
-                            + consecutiveSatStuckTeardowns + " consecutive in-process teardowns "
-                            + "(stuck at " + satForLog() + ") — this doesn't recover without a "
-                            + "full process restart (see 2026-08-25/08-23 incidents); restarting "
-                            + "process now");
-                        android.os.Process.killProcess(android.os.Process.myPid());
+                if (satelliteTrackingActive()) {
+                    if (lastSatStatusUpdateMs == lastCheckedSatStatusUpdateMs) {
+                        consecutiveSatStuckTeardowns++;
+                        if (consecutiveSatStuckTeardowns >= SAT_STUCK_TEARDOWNS_BEFORE_RESTART) {
+                            writeLog("GPS WATCHDOG: satellite status hasn't advanced at all across "
+                                + consecutiveSatStuckTeardowns + " consecutive in-process teardowns "
+                                + "(stuck at " + satForLog() + ") — this doesn't recover without a "
+                                + "full process restart (see 2026-08-25/08-23 incidents); restarting "
+                                + "process now");
+                            android.os.Process.killProcess(android.os.Process.myPid());
+                        }
+                    } else {
+                        consecutiveSatStuckTeardowns = 0;
+                        lastCheckedSatStatusUpdateMs = lastSatStatusUpdateMs;
                     }
-                } else {
-                    consecutiveSatStuckTeardowns = 0;
-                    lastCheckedSatStatusUpdateMs = lastSatStatusUpdateMs;
                 }
             }
             // Defensive: re-assert the wake lock in case it was ever released unexpectedly.
@@ -444,17 +564,27 @@ public class LocationService extends Service implements LocationListener {
 
     private final Runnable logTick = new Runnable() {
         @Override public void run() {
+            // "Hybrid" mode's per-cycle decision: GPS gets first refusal (fixBuffer is only
+            // still empty here if GPS produced literally nothing — or nothing passing minSat —
+            // this cycle), and only then does a fresh-enough network fix collected in parallel
+            // (see networkFallbackListener) stand in for this one cycle. Never both at once —
+            // fixBuffer either holds this cycle's GPS fixes or this single network one, exactly
+            // like the single-provider modes, so computeAveragedPosition() below never mixes them.
+            if ("Hybrid".equals(locationMode) && fixBuffer.isEmpty() && lastNetworkFixTimeMs > 0
+                    && System.currentTimeMillis() - lastNetworkFixTimeMs <= effectiveInterval() * 2) {
+                recordNetworkFallbackFix();
+            }
             logGpsStatusIfChanged();
             if (hasLocation) {
                 long rawAgeMs = lastRawFixTimeMs > 0 ? System.currentTimeMillis() - lastRawFixTimeMs : Long.MAX_VALUE;
                 long fixAgeS  = lastFixTimeMs > 0 ? (System.currentTimeMillis() - lastFixTimeMs) / 1000 : -1;
-                boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-                writeLog(String.format("Log tick: fixes-collected=%d %s GPS-fix-age=%s provider=%s",
+                boolean provEnabled = locationManager.isProviderEnabled(activeProvider());
+                writeLog(String.format("Log tick: fixes-collected=%d %s fix-age=%s provider=%s",
                     fixBuffer.size(), satForLog(),
                     fixAgeS < 0 ? "--" : fixAgeS + "s",
                     provEnabled ? "ok" : "DISABLED"));
                 if (rawAgeMs > effectiveInterval() * 2) {
-                    writeLog(String.format("WARNING: last raw fix was %ds ago — GPS may have lost lock",
+                    writeLog(String.format("WARNING: last raw fix was %ds ago — location provider may have lost lock",
                         rawAgeMs == Long.MAX_VALUE ? -1 : rawAgeMs / 1000));
                 }
                 final boolean hadNewFixes = !fixBuffer.isEmpty();
@@ -471,7 +601,7 @@ public class LocationService extends Service implements LocationListener {
                         // Push averaged position + satellite count to UI at interval cadence
                         if (uiListener != null) {
                             uiListener.onLocationUpdate(avg[0], avg[1], avg[2], (float) avg[3]);
-                            uiListener.onSatellitesUpdate(csvSatellites, isSatFresh());
+                            uiListener.onSatellitesUpdate(csvSatellites, isFixFresh());
                         }
                         String w3w;
                         if (w3wBackoffTicks > 0) {
@@ -542,8 +672,8 @@ public class LocationService extends Service implements LocationListener {
                     }
                 }).start();
             } else {
-                boolean provEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-                writeLog(String.format("Log tick: no GPS fix yet — provider=%s %s",
+                boolean provEnabled = locationManager.isProviderEnabled(activeProvider());
+                writeLog(String.format("Log tick: no fix yet — provider=%s %s",
                     provEnabled ? "enabled" : "DISABLED", satForLog()));
             }
             logHandler.postDelayed(this, effectiveInterval());
@@ -584,6 +714,10 @@ public class LocationService extends Service implements LocationListener {
         restoreSettingsIfWiped();
         loadSettings();
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        hasGpsFeature = getPackageManager().hasSystemFeature(PackageManager.FEATURE_LOCATION_GPS);
+        serviceStartTimeMs = System.currentTimeMillis();
+        writeLog("GPS hardware feature: " + (hasGpsFeature ? "declared" : "not declared")
+            + " | Location Services setting: " + locationMode);
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
 
         screenReceiver = new BroadcastReceiver() {
@@ -630,7 +764,7 @@ public class LocationService extends Service implements LocationListener {
         screenOn = powerManager.isInteractive();
         writeLog("Initial screen state: " + (screenOn ? "on" : "off") + " (queried at startup)");
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        if (hasGpsFeature && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssCallback = new GnssStatus.Callback() {
                 @Override public void onStarted() { writeLog("GNSS hardware started"); }
                 @Override public void onStopped() { writeLog("GNSS hardware stopped"); }
@@ -687,6 +821,7 @@ public class LocationService extends Service implements LocationListener {
         uploadHandler.removeCallbacks(uploadTick);
         gpsHandler.removeCallbacks(gpsWatchdog);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
+        try { locationManager.removeUpdates(networkFallbackListener); } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null)
             try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
         try { unregisterReceiver(batteryReceiver); } catch (Exception ignored) {}
@@ -717,18 +852,28 @@ public class LocationService extends Service implements LocationListener {
         retentionDays      = p.getInt    (PREF_RETENTION_DAYS,  31);
         mapType            = p.getString (PREF_MAP_TYPE,         "Land");
         alertVolume        = p.getString (PREF_ALERT_VOLUME,     "High");
+        String loadedMode  = p.getString (PREF_LOCATION_MODE,    "Auto");
+        locationMode = ("GPS".equals(loadedMode) || "Network".equals(loadedMode) || "Hybrid".equals(loadedMode))
+            ? loadedMode : "Auto";
         writeLog("Settings loaded: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " alertVolume=" + alertVolume
             + " boot=" + startOnBoot
             + " minSat=" + minSat + " displayPeriod=" + displayPeriodHours + "h"
-            + " numGpsFixes=" + numGpsFixes + " map=" + mapType
+            + " numGpsFixes=" + numGpsFixes + " map=" + mapType + " locationMode=" + locationMode
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
     }
 
     void applySettings() {
         writeLog("Settings applied: update=" + (updateInterval/1000) + "s upload=" + (uploadInterval/1000)
             + "s session=" + session + " alert=" + alertCode + " map=" + mapType
+            + " locationMode=" + locationMode
             + " url=" + nextcloudUrl + " user=" + nextcloudUser);
+        // Give GPS a fresh, fair grace period under the new setting whenever settings are
+        // (re)applied — most relevantly right after the user changes locationMode in the
+        // Settings dialog, so switching back to "GPS" or "Auto" doesn't stay stuck with an
+        // earlier session's fallback verdict.
+        usingNetworkFallback = false;
+        serviceStartTimeMs = System.currentTimeMillis();
         gpsHandler.removeCallbacks(gpsWatchdog);
         try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
         startLocationUpdates();
@@ -786,24 +931,28 @@ public class LocationService extends Service implements LocationListener {
             // called from there. That exception used to abort mid-restart: removeUpdates() had
             // already run, so GPS was left permanently deregistered (and the watchdog reschedule,
             // later in this same method, never ran either) until the app was restarted.
+            String provider = activeProvider();
             locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, requestIntervalMs, 0, this, Looper.getMainLooper());
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssCallback != null) {
+                provider, requestIntervalMs, 0, this, Looper.getMainLooper());
+            if (satelliteTrackingActive() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                    && gnssCallback != null) {
                 try { locationManager.unregisterGnssStatusCallback(gnssCallback); } catch (Exception ignored) {}
                 locationManager.registerGnssStatusCallback(gnssCallback, gpsHandler);
             }
-            boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            writeLog("Requesting GPS updates every " + (requestIntervalMs / 1000) + "s (min "
-                + numGpsFixes + " fixes/cycle, min " + minSat + " satellites required)"
-                + " gps=" + (gpsEnabled ? "enabled" : "DISABLED"));
+            boolean provEnabledNow = locationManager.isProviderEnabled(provider);
+            writeLog("Requesting " + provider + " updates every " + (requestIntervalMs / 1000) + "s"
+                + (satelliteTrackingActive() ? " (min " + numGpsFixes + " fixes/cycle, min " + minSat
+                    + " satellites required)" : "")
+                + " " + provider + "=" + (provEnabledNow ? "enabled" : "DISABLED"));
             // Start watchdog
             gpsHandler.removeCallbacks(gpsWatchdog);
             gpsHandler.postDelayed(gpsWatchdog, 60_000L);
-            // Seed with last known GPS location if available. Network-provider fixes are
-            // deliberately not used anywhere (acquisition, fallback, or averaging) — they're
-            // coarse cell/Wi-Fi based and were previously found to be silently dragging down
-            // the position average when mixed in with real GPS fixes.
-            Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            // Seed with the last known location from whichever provider is active. GPS and
+            // network fixes are still never mixed within a single average — deliberate ever
+            // since network fixes (coarse cell/Wi-Fi based) were found silently dragging down a
+            // GPS-based average when both were mixed in; this device just isn't using GPS at all
+            // (see hasGpsFeature/usingNetworkFallback) so there's nothing to mix.
+            Location last = locationManager.getLastKnownLocation(provider);
             if (last != null) {
                 long ageS = (System.currentTimeMillis() - last.getTime()) / 1000;
                 writeLog("Last known location: age=" + ageS + "s acc=" + last.getAccuracy()
@@ -812,8 +961,30 @@ public class LocationService extends Service implements LocationListener {
             } else {
                 writeLog("No last known location available");
             }
+            updateNetworkFallbackRegistration();
         } catch (SecurityException e) {
             writeLog("SecurityException starting location updates: " + e.getMessage());
+        }
+    }
+
+    // "Hybrid" mode's secondary registration — see networkFallbackListener above and logTick's
+    // per-cycle use of it. Unconditionally torn down and re-evaluated on every call (mirroring
+    // the primary registration just above) so a locationMode change away from "Hybrid" — or a
+    // fresh permission grant — takes effect immediately rather than only on the next full
+    // service restart.
+    private void updateNetworkFallbackRegistration() {
+        try { locationManager.removeUpdates(networkFallbackListener); } catch (Exception ignored) {}
+        if (!"Hybrid".equals(locationMode)) return;
+        boolean fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        if (!fineGranted) return;
+        try {
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,
+                GPS_REQUEST_INTERVAL_SCREEN_OFF_MS, 0, networkFallbackListener, Looper.getMainLooper());
+            writeLog("GPS (then Network) mode: also requesting network updates every "
+                + (GPS_REQUEST_INTERVAL_SCREEN_OFF_MS / 1000) + "s as a per-cycle fallback");
+        } catch (SecurityException e) {
+            writeLog("SecurityException starting network fallback updates: " + e.getMessage());
         }
     }
 
@@ -829,6 +1000,24 @@ public class LocationService extends Service implements LocationListener {
         if (desired != registeredGpsRequestIntervalMs) {
             try { locationManager.removeUpdates(this); } catch (Exception ignored) {}
             startLocationUpdates();
+        }
+    }
+
+    // "Hybrid" mode only — see logTick. Feeds a single network fix into fixBuffer for a cycle
+    // GPS produced nothing usable in, reusing the exact same downstream averaging/CSV/GPX/KML/
+    // W3W pipeline as a normal GPS cycle (that pipeline only ever sees "this cycle's buffer",
+    // never which provider filled it). Deliberately bypasses onLocationChanged() entirely: that
+    // method's minSat gating and satellite bookkeeping are GPS-only concepts that must never
+    // apply to a network fix.
+    private void recordNetworkFallbackFix() {
+        fixBuffer.add(new double[]{netLat, netLon, netAlt, netAccuracy});
+        lastRawFixTimeMs = System.currentTimeMillis();
+        csvLat = netLat; csvLon = netLon; csvAlt = netAlt; csvAccuracy = netAccuracy;
+        if (!hasLocation) {
+            hasLocation = true;
+            writeLog(String.format(Locale.US,
+                "First fix: network (GPS produced nothing this cycle) lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm bat=%d%%",
+                netLat, netLon, netAlt, netAccuracy, csvBattery));
         }
     }
 
@@ -851,10 +1040,13 @@ public class LocationService extends Service implements LocationListener {
         // that stale count to reject an otherwise-real fix would be worse than not gating at all,
         // so a stale reading is treated as "unknown" and never blocks a fix — only a *fresh*
         // reading below minSat does.
-        boolean satFresh = isSatFresh();
-        if (!satFresh || csvSatellites >= minSat) {
+        // Satellite-count gating is a GPS-only concept — network fixes have no satellite count
+        // at all, so they're always accepted unconditionally (satelliteTrackingActive() false
+        // short-circuits the rest of the condition, same as an always-stale reading would).
+        boolean satFresh = satelliteTrackingActive() && isSatFresh();
+        if (!satelliteTrackingActive() || !satFresh || csvSatellites >= minSat) {
             fixBuffer.add(new double[]{csvLat, csvLon, csvAlt, csvAccuracy});
-            if (!satFresh) {
+            if (satelliteTrackingActive() && !satFresh) {
                 writeLog(String.format(Locale.US,
                     "GPS fix accepted despite stale satellite reading (sat=%d, minSat check skipped)",
                     csvSatellites));
@@ -863,14 +1055,20 @@ public class LocationService extends Service implements LocationListener {
             writeLog(String.format(Locale.US,
                 "GPS fix rejected: sat=%d < minSat=%d — not added to average", csvSatellites, minSat));
         }
+        String word = satelliteTrackingActive() ? "GPS" : "network";
         if (!hasLocation) {
             hasLocation = true;
-            writeLog(String.format(Locale.US,
-                "First GPS fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
-                csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery));
+            writeLog(satelliteTrackingActive()
+                ? String.format(Locale.US,
+                    "First %s fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm sat=%d bat=%d%%",
+                    word, csvLat, csvLon, csvAlt, csvAccuracy, csvSatellites, csvBattery)
+                : String.format(Locale.US,
+                    "First %s fix: lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm bat=%d%%",
+                    word, csvLat, csvLon, csvAlt, csvAccuracy, csvBattery));
         } else if (csvAccuracy > 100f) {
-            writeLog(String.format(Locale.US,
-                "GPS fix poor accuracy: acc=%.1fm sat=%d", csvAccuracy, csvSatellites));
+            writeLog(satelliteTrackingActive()
+                ? String.format(Locale.US, "%s fix poor accuracy: acc=%.1fm sat=%d", word, csvAccuracy, csvSatellites)
+                : String.format(Locale.US, "%s fix poor accuracy: acc=%.1fm", word, csvAccuracy));
         }
     }
 

@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.m21hereiam"
-    android:versionCode="31"
-    android:versionName="2.9.4">
+    android:versionCode="34"
+    android:versionName="2.12.0">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="36" />
+
+    <!-- Not required: falls back to network-based location on devices with no GPS chip
+         (or ones that declare the feature without a working one) — see
+         LocationService.hasGpsFeature / usingNetworkFallback. -->
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
