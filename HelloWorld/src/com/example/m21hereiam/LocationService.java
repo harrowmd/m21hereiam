@@ -1949,6 +1949,7 @@ public class LocationService extends Service implements LocationListener {
                                         FileOutputStream fos = new FileOutputStream(outFile);
                                         fos.write(bytes); fos.close();
                                         writeLog("Alert photo: saved " + fileName + " (" + bytes.length + " bytes)");
+                                        setExifLocation(outFile);
                                         int code = putFile(outFile, sessionDir + enc(fileName), auth);
                                         writeLog("Alert photo: uploaded " + fileName + " \u2192 HTTP " + code);
                                         jpegSaved[0] = true;
@@ -2014,6 +2015,7 @@ public class LocationService extends Service implements LocationListener {
                                 // YuvImage.compressToJpeg() writes no EXIF — set orientation
                                 // separately so the fallback path is corrected the same as JPEG capture
                                 setExifOrientation(outFile, jpegOrientation);
+                                setExifLocation(outFile);
                                 writeLog("Alert photo: saved (YUV) " + fileName
                                     + " (" + jpegBytes.length + " bytes, " + imgW + "x" + imgH + ")");
                                 int code = putFile(outFile, sessionDir + enc(fileName), auth);
@@ -2100,6 +2102,67 @@ public class LocationService extends Service implements LocationListener {
             exif.saveAttributes();
         } catch (Exception e) {
             writeLog("Alert photo: EXIF orientation set failed: " + e.getMessage());
+        }
+    }
+
+    // EXIF GPS lat/long tags are stored as three unsigned RATIONAL values (degrees, minutes,
+    // seconds) plus a separate N/S or E/W ref tag for sign — there's no signed-decimal
+    // representation. absDegrees must already be Math.abs()'d; sign is conveyed by the ref tag
+    // (set separately) rather than by this string.
+    private String toExifDms(double absDegrees) {
+        int degrees = (int) absDegrees;
+        double minutesFull = (absDegrees - degrees) * 60;
+        int minutes = (int) minutesFull;
+        long secondsHundredths = Math.round((minutesFull - minutes) * 60 * 100);
+        return degrees + "/1," + minutes + "/1," + secondsHundredths + "/100";
+    }
+
+    // Stamps the most recent known position (whichever provider is actually active — see
+    // locationMode/satelliteTrackingActive()) into the alert photo's GPS EXIF tags before it's
+    // uploaded. Uses csvLat/csvLon/csvAlt/csvAccuracy — continuously updated on every raw fix
+    // (or, in "Hybrid" mode, on every network-substituted cycle too — see
+    // recordNetworkFallbackFix()) — rather than the once-per-cycle averaged position, so an
+    // alert firing between averaging cycles still gets the freshest data available. Silently
+    // skipped if no fix has landed yet at all (hasLocation false): better to upload a photo with
+    // no location than one falsely stamped at 0,0.
+    //
+    // The framework's android.media.ExifInterface (confirmed against this project's actual
+    // android.jar — there's no gradle/androidx dependency here) has none of the setLatLong() /
+    // setAltitude() / setGpsInfo(Location) convenience methods; those only exist in the separate
+    // AndroidX exifinterface library. Every GPS tag below has to go through the same raw
+    // setAttribute(String, String) every other EXIF tag in this file uses, in the exact
+    // comma-separated rational-triplet format EXIF's GPS tags are actually stored in.
+    private void setExifLocation(File file) {
+        if (!hasLocation) return;
+        try {
+            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
+            exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, toExifDms(Math.abs(csvLat)));
+            exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, csvLat >= 0 ? "N" : "S");
+            exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, toExifDms(Math.abs(csvLon)));
+            exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, csvLon >= 0 ? "E" : "W");
+            exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE,
+                Math.round(Math.abs(csvAlt) * 1000) + "/1000");
+            exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, csvAlt >= 0 ? "0" : "1");
+            // GPS date/time tags are UTC, distinct from every other (local-time) date field in
+            // this file. Confirmed live 2026-09-05: despite GPSTimeStamp being a RATIONAL-triplet
+            // field on disk like lat/long above, the framework ExifInterface's own setAttribute()
+            // silently drops it (no exception, tag just doesn't end up in the file) unless given
+            // as a plain "HH:mm:ss" string — the same colon format as the datestamp, not the
+            // comma-rational format the underlying EXIF spec actually stores it as. Written and
+            // read back with Python/Pillow to confirm both tags land correctly in this format.
+            SimpleDateFormat gpsDateFmt = new SimpleDateFormat("yyyy:MM:dd", Locale.US);
+            SimpleDateFormat gpsTimeFmt = new SimpleDateFormat("HH:mm:ss", Locale.US);
+            gpsDateFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+            gpsTimeFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+            Date utcNow = new Date();
+            exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, gpsDateFmt.format(utcNow));
+            exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, gpsTimeFmt.format(utcNow));
+            exif.saveAttributes();
+            writeLog(String.format(Locale.US,
+                "Alert photo: EXIF location set lat=%.6f lon=%.6f alt=%.1fm acc=%.1fm",
+                csvLat, csvLon, csvAlt, csvAccuracy));
+        } catch (Exception e) {
+            writeLog("Alert photo: EXIF location set failed: " + e.getMessage());
         }
     }
 
